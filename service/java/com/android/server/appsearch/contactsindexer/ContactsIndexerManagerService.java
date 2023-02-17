@@ -36,7 +36,8 @@ import android.util.SparseArray;
 
 import com.android.server.LocalManagerRegistry;
 import com.android.server.SystemService;
-import com.android.server.appsearch.AppSearchModule;
+import com.android.server.appsearch.AppSearchEnvironment;
+import com.android.server.appsearch.AppSearchEnvironmentFactory;
 
 import java.io.File;
 import java.util.List;
@@ -88,8 +89,12 @@ public final class ContactsIndexerManagerService extends SystemService {
             int userId = userHandle.getIdentifier();
             ContactsIndexerUserInstance instance = mContactsIndexersLocked.get(userId);
             if (instance == null) {
-                Context userContext = mContext.createContextAsUser(userHandle, /*flags=*/ 0);
-                File appSearchDir = AppSearchModule.getAppSearchDir(userHandle);
+                AppSearchEnvironment appSearchEnvironment = AppSearchEnvironmentFactory
+                    .getEnvironmentInstance();
+                Context userContext = appSearchEnvironment
+                    .createContextAsUser(mContext, userHandle);
+                File appSearchDir = appSearchEnvironment
+                    .getAppSearchDir(userContext, userHandle);
                 File contactsDir = new File(appSearchDir, "contacts");
                 try {
                     instance = ContactsIndexerUserInstance.createInstance(userContext, contactsDir,

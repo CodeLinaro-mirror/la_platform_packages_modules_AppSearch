@@ -22,6 +22,8 @@ import static com.android.server.appsearch.external.localstorage.util.PrefixUtil
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.appsearch.JoinSpec;
+import android.app.appsearch.SearchResult;
 import android.app.appsearch.SearchSpec;
 import android.app.appsearch.exceptions.AppSearchException;
 import android.util.ArrayMap;
@@ -33,6 +35,7 @@ import com.android.server.appsearch.external.localstorage.visibilitystore.Visibi
 import com.android.server.appsearch.external.localstorage.visibilitystore.VisibilityStore;
 import com.android.server.appsearch.external.localstorage.visibilitystore.VisibilityUtil;
 
+import com.google.android.icing.proto.JoinSpecProto;
 import com.google.android.icing.proto.PropertyWeight;
 import com.google.android.icing.proto.ResultSpecProto;
 import com.google.android.icing.proto.SchemaTypeConfigProto;
@@ -71,6 +74,18 @@ public final class SearchSpecToProtoConverter {
     private final Set<String> mTargetPrefixedSchemaFilters;
 
     /**
+     * The cached Map of {@code <Prefix, Set<PrefixedNamespace>>} stores all prefixed namespace
+     * filters which are stored in AppSearch. This is a field so that we can generate nested protos.
+     */
+    private final Map<String, Set<String>> mNamespaceMap;
+
+    /**
+     * The nested converter, which contains SearchSpec, ResultSpec, and ScoringSpec information
+     * about the nested query. This will remain null if there is no nested {@link JoinSpec}.
+     */
+    @Nullable private SearchSpecToProtoConverter mNestedConverter = null;
+
+    /**
      * Creates a {@link SearchSpecToProtoConverter} for given {@link SearchSpec}.
      *
      * @param queryExpression Query String to search.
@@ -90,8 +105,7 @@ public final class SearchSpecToProtoConverter {
         mQueryExpression = Objects.requireNonNull(queryExpression);
         mSearchSpec = Objects.requireNonNull(searchSpec);
         mPrefixes = Objects.requireNonNull(prefixes);
-        Objects.requireNonNull(namespaceMap);
-        Objects.requireNonNull(schemaMap);
+        mNamespaceMap = Objects.requireNonNull(namespaceMap);
         mTargetPrefixedNamespaceFilters =
                 SearchSpecToProtoConverterUtil.generateTargetNamespaceFilters(
                         prefixes, namespaceMap, searchSpec.getFilterNamespaces());
@@ -104,11 +118,27 @@ public final class SearchSpecToProtoConverter {
         } else {
             mTargetPrefixedSchemaFilters = new ArraySet<>();
         }
+
+        JoinSpec joinSpec = searchSpec.getJoinSpec();
+        if (joinSpec == null) {
+            return;
+        }
+
+        mNestedConverter =
+                new SearchSpecToProtoConverter(
+                        joinSpec.getNestedQuery(),
+                        joinSpec.getNestedSearchSpec(),
+                        mPrefixes,
+                        namespaceMap,
+                        schemaMap);
     }
 
     /**
      * @return whether this search's target filters are empty. If any target filter is empty, we
      *     should skip send request to Icing.
+     *     <p>The nestedConverter is not checked as {@link SearchResult}s from the nested query have
+     *     to be joined to a {@link SearchResult} from the parent query. If the parent query has
+     *     nothing to search, then so does the child query.
      */
     public boolean hasNothingToSearch() {
         return mTargetPrefixedNamespaceFilters.isEmpty() || mTargetPrefixedSchemaFilters.isEmpty();
@@ -128,20 +158,66 @@ public final class SearchSpecToProtoConverter {
             @NonNull CallerAccess callerAccess,
             @Nullable VisibilityStore visibilityStore,
             @Nullable VisibilityChecker visibilityChecker) {
+        removeInaccessibleSchemaFilterCached(
+                callerAccess,
+                visibilityStore,
+                /*inaccessibleSchemaPrefixes=*/ new ArraySet<>(),
+                /*accessibleSchemaPrefixes=*/ new ArraySet<>(),
+                visibilityChecker);
+    }
+
+    /**
+     * For each target schema, we will check visibility store is that accessible to the caller. And
+     * remove this schemas if it is not allowed for caller to query. This private version accepts
+     * two additional parameters to minimize the amount of calls to {@link
+     * VisibilityUtil#isSchemaSearchableByCaller}.
+     *
+     * @param callerAccess Visibility access info of the calling app
+     * @param visibilityStore The {@link VisibilityStore} that store all visibility information.
+     * @param visibilityChecker Optional visibility checker to check whether the caller could access
+     *     target schemas. Pass {@code null} will reject access for all documents which doesn't
+     *     belong to the calling package.
+     * @param inaccessibleSchemaPrefixes A set of schemas that are known to be inaccessible. This is
+     *     helpful for reducing duplicate calls to {@link VisibilityUtil}.
+     * @param accessibleSchemaPrefixes A set of schemas that are known to be accessible. This is
+     *     helpful for reducing duplicate calls to {@link VisibilityUtil}.
+     */
+    private void removeInaccessibleSchemaFilterCached(
+            @NonNull CallerAccess callerAccess,
+            @Nullable VisibilityStore visibilityStore,
+            @NonNull Set<String> inaccessibleSchemaPrefixes,
+            @NonNull Set<String> accessibleSchemaPrefixes,
+            @Nullable VisibilityChecker visibilityChecker) {
         Iterator<String> targetPrefixedSchemaFilterIterator =
                 mTargetPrefixedSchemaFilters.iterator();
         while (targetPrefixedSchemaFilterIterator.hasNext()) {
             String targetPrefixedSchemaFilter = targetPrefixedSchemaFilterIterator.next();
             String packageName = getPackageName(targetPrefixedSchemaFilter);
 
-            if (!VisibilityUtil.isSchemaSearchableByCaller(
+            if (accessibleSchemaPrefixes.contains(targetPrefixedSchemaFilter)) {
+                continue;
+            } else if (inaccessibleSchemaPrefixes.contains(targetPrefixedSchemaFilter)) {
+                targetPrefixedSchemaFilterIterator.remove();
+            } else if (!VisibilityUtil.isSchemaSearchableByCaller(
                     callerAccess,
                     packageName,
                     targetPrefixedSchemaFilter,
                     visibilityStore,
                     visibilityChecker)) {
                 targetPrefixedSchemaFilterIterator.remove();
+                inaccessibleSchemaPrefixes.add(targetPrefixedSchemaFilter);
+            } else {
+                accessibleSchemaPrefixes.add(targetPrefixedSchemaFilter);
             }
+        }
+
+        if (mNestedConverter != null) {
+            mNestedConverter.removeInaccessibleSchemaFilterCached(
+                    callerAccess,
+                    visibilityStore,
+                    inaccessibleSchemaPrefixes,
+                    accessibleSchemaPrefixes,
+                    visibilityChecker);
         }
     }
 
@@ -164,7 +240,57 @@ public final class SearchSpecToProtoConverter {
         }
         protoBuilder.setTermMatchType(termMatchCodeProto);
 
+        if (mNestedConverter != null && !mNestedConverter.hasNothingToSearch()) {
+            JoinSpecProto.NestedSpecProto nestedSpec =
+                    JoinSpecProto.NestedSpecProto.newBuilder()
+                            .setResultSpec(mNestedConverter.toResultSpecProto(mNamespaceMap))
+                            .setScoringSpec(mNestedConverter.toScoringSpecProto())
+                            .setSearchSpec(mNestedConverter.toSearchSpecProto())
+                            .build();
+
+            // This cannot be null, otherwise mNestedConverter would be null as well.
+            JoinSpec joinSpec = mSearchSpec.getJoinSpec();
+            JoinSpecProto.Builder joinSpecProtoBuilder =
+                    JoinSpecProto.newBuilder()
+                            .setNestedSpec(nestedSpec)
+                            .setParentPropertyExpression(JoinSpec.QUALIFIED_ID)
+                            .setChildPropertyExpression(joinSpec.getChildPropertyExpression())
+                            .setAggregationScoringStrategy(
+                                    toAggregationScoringStrategy(
+                                            joinSpec.getAggregationScoringStrategy()))
+                            .setMaxJoinedChildCount(joinSpec.getMaxJoinedResultCount());
+
+            protoBuilder.setJoinSpec(joinSpecProtoBuilder);
+        }
+
         return protoBuilder.build();
+    }
+
+    /**
+     * Helper to convert to JoinSpecProto.AggregationScore.
+     *
+     * <p>{@link JoinSpec#AGGREGATION_SCORING_OUTER_RESULT_RANKING_SIGNAL} will be treated as
+     * undefined, which is the default behavior.
+     *
+     * @param aggregationScoringStrategy the scoring strategy to convert.
+     */
+    @NonNull
+    public static JoinSpecProto.AggregationScoringStrategy.Code toAggregationScoringStrategy(
+            @JoinSpec.AggregationScoringStrategy int aggregationScoringStrategy) {
+        switch (aggregationScoringStrategy) {
+            case JoinSpec.AGGREGATION_SCORING_AVG_RANKING_SIGNAL:
+                return JoinSpecProto.AggregationScoringStrategy.Code.AVG;
+            case JoinSpec.AGGREGATION_SCORING_MIN_RANKING_SIGNAL:
+                return JoinSpecProto.AggregationScoringStrategy.Code.MIN;
+            case JoinSpec.AGGREGATION_SCORING_MAX_RANKING_SIGNAL:
+                return JoinSpecProto.AggregationScoringStrategy.Code.MAX;
+            case JoinSpec.AGGREGATION_SCORING_SUM_RANKING_SIGNAL:
+                return JoinSpecProto.AggregationScoringStrategy.Code.SUM;
+            case JoinSpec.AGGREGATION_SCORING_RESULT_COUNT:
+                return JoinSpecProto.AggregationScoringStrategy.Code.COUNT;
+            default:
+                return JoinSpecProto.AggregationScoringStrategy.Code.NONE;
+        }
     }
 
     /**
@@ -283,6 +409,8 @@ public final class SearchSpecToProtoConverter {
                 return ScoringSpecProto.RankingStrategy.Code.USAGE_TYPE2_LAST_USED_TIMESTAMP;
             case SearchSpec.RANKING_STRATEGY_ADVANCED_RANKING_EXPRESSION:
                 return ScoringSpecProto.RankingStrategy.Code.ADVANCED_SCORING_EXPRESSION;
+            case SearchSpec.RANKING_STRATEGY_JOIN_AGGREGATE_SCORE:
+                return ScoringSpecProto.RankingStrategy.Code.JOIN_AGGREGATE_SCORE;
             default:
                 throw new IllegalArgumentException(
                         "Invalid result ranking strategy: " + rankingStrategyCode);
