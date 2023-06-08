@@ -146,10 +146,14 @@ public interface Features {
     /**
      * Feature for {@link #isFeatureSupported(String)}. This feature covers {@link
      * AppSearchSession#searchSuggestion}.
-     *
-     * @hide
      */
     String SEARCH_SUGGESTION = "SEARCH_SUGGESTION";
+
+    /**
+     * Feature for {@link #isFeatureSupported(String)}. This feature covers {@link
+     * AppSearchSchema.StringPropertyConfig.Builder#setDeletionPropagation}.
+     */
+    String SCHEMA_SET_DELETION_PROPAGATION = "SCHEMA_SET_DELETION_PROPAGATION";
 
     /**
      * Returns whether a feature is supported at run-time. Feature support depends on the feature in
