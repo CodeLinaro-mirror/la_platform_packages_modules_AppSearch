@@ -1,4 +1,3 @@
-
 /*
  * Copyright (C) 2021 The Android Open Source Project
  *
@@ -17,6 +16,9 @@
 
 package com.android.server.appsearch;
 
+import com.android.server.appsearch.external.localstorage.IcingOptionsConfig;
+import com.android.server.appsearch.external.localstorage.LimitConfig;
+
 /**
  * An interface which exposes config flags to AppSearch.
  *
@@ -27,7 +29,7 @@ package com.android.server.appsearch;
  *
  * @hide
  */
-public interface AppSearchConfig extends AutoCloseable {
+public interface AppSearchConfig extends AutoCloseable, IcingOptionsConfig, LimitConfig {
     /**
      * Default min time interval between samples in millis if there is no value set for
      * {@link #getCachedMinTimeIntervalBetweenSamplesMillis()} in the flag system.
@@ -47,6 +49,10 @@ public interface AppSearchConfig extends AutoCloseable {
     int DEFAULT_TIME_OPTIMIZE_THRESHOLD_MILLIS = Integer.MAX_VALUE;
     int DEFAULT_DOC_COUNT_OPTIMIZE_THRESHOLD = 10_000;
     int DEFAULT_MIN_TIME_OPTIMIZE_THRESHOLD_MILLIS = 0;
+    // Cached API Call Stats is disabled by default
+    int DEFAULT_API_CALL_STATS_LIMIT = 0;
+
+    boolean DEFAULT_ICING_CONFIG_USE_READ_ONLY_SEARCH = true;
 
     /** Returns cached value for minTimeIntervalBetweenSamplesMillis. */
     long getCachedMinTimeIntervalBetweenSamplesMillis();
@@ -101,15 +107,6 @@ public interface AppSearchConfig extends AutoCloseable {
      */
     int getCachedSamplingIntervalForOptimizeStats();
 
-    /** Returns the maximum serialized size an indexed document can be, in bytes. */
-    int getCachedLimitConfigMaxDocumentSizeBytes();
-
-    /** Returns the maximum number of active docs allowed per package. */
-    int getCachedLimitConfigMaxDocumentCount();
-
-    /** Returns the maximum number of suggestions allowed in a single query. */
-    int getCachedLimitConfigMaxSuggestionCount();
-
     /**
      * Returns the cached optimize byte size threshold.
      *
@@ -127,7 +124,7 @@ public interface AppSearchConfig extends AutoCloseable {
     int getCachedTimeOptimizeThresholdMs();
 
     /**
-     * Returns the cached optimize document count threshold threshold.
+     * Returns the cached optimize document count threshold.
      *
      * An AppSearch Optimize job will be triggered if the number of document of garbage resource
      * exceeds this threshold.
@@ -141,6 +138,16 @@ public interface AppSearchConfig extends AutoCloseable {
      * this threshold.
      */
     int getCachedMinTimeOptimizeThresholdMs();
+
+    /**
+     * Returns the maximum number of last API calls' statistics that can be included in dumpsys.
+     */
+    int getCachedApiCallStatsLimit();
+
+    /**
+     * Returns the cached denylist.
+     */
+    Denylist getCachedDenylist();
 
     /**
      * Closes this {@link AppSearchConfig}.

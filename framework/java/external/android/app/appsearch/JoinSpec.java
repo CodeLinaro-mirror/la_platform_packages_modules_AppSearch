@@ -33,7 +33,7 @@ import java.util.Objects;
  * <p>Joins are only possible for matching on the qualified id of an outer document and a property
  * value within a subquery document. In the subquery documents, these values may be referred to with
  * a property path such as "email.recipient.id" or "entityId" or a property expression. One such
- * property expression is {@link #QUALIFIED_ID}, which refers to the document's combined package,
+ * property expression is "this.qualifiedId()", which refers to the document's combined package,
  * database, namespace, and id.
  *
  * <p>Take these outer query and subquery results for example:
@@ -98,6 +98,8 @@ public final class JoinSpec {
      *
      * <p>For instance, if a document with an id of "id1" exists in the namespace "ns" within the
      * database "db" created by package "pkg", this would evaluate to "pkg$db/ns#id1".
+     *
+     * @hide
      */
     public static final String QUALIFIED_ID = "this.qualifiedId()";
 
@@ -174,8 +176,8 @@ public final class JoinSpec {
     }
 
     /**
-     * Returns the max amount of {@link SearchResult} objects that will be joined to the parent
-     * document, with a default of 10 SearchResults.
+     * Returns the max amount of {@link SearchResult} objects to return with the parent document,
+     * with a default of 10 SearchResults.
      */
     public int getMaxJoinedResultCount() {
         return mBundle.getInt(MAX_JOINED_RESULT_COUNT);
@@ -273,8 +275,13 @@ public final class JoinSpec {
         }
 
         /**
-         * Sets the max amount of {@link SearchResults} to join to the parent document, with a
+         * Sets the max amount of {@link SearchResults} to return with the parent document, with a
          * default of 10 SearchResults.
+         *
+         * <p>This does NOT limit the number of results that are joined with the parent document for
+         * scoring. This means that, when set, only a maximum of {@code maxJoinedResultCount}
+         * results will be returned with each parent document, but all results that are joined with
+         * a parent will factor into the score.
          */
         @CanIgnoreReturnValue
         @NonNull
