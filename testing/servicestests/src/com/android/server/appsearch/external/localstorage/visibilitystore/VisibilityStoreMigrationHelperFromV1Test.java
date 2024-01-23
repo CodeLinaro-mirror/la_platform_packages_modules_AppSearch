@@ -25,7 +25,7 @@ import android.app.appsearch.AppSearchSchema;
 import android.app.appsearch.InternalSetSchemaResponse;
 import android.app.appsearch.PackageIdentifier;
 import android.app.appsearch.SetSchemaRequest;
-import android.app.appsearch.VisibilityDocument;
+import android.app.appsearch.VisibilityConfig;
 
 import com.android.server.appsearch.external.localstorage.AppSearchConfigImpl;
 import com.android.server.appsearch.external.localstorage.AppSearchImpl;
@@ -66,10 +66,14 @@ public class VisibilityStoreMigrationHelperFromV1Test {
         // Values for a "foo" client
         String packageNameFoo = "packageFoo";
         byte[] sha256CertFoo = new byte[32];
+        PackageIdentifier packageIdentifierFoo =
+                new PackageIdentifier(packageNameFoo, sha256CertFoo);
 
         // Values for a "bar" client
         String packageNameBar = "packageBar";
         byte[] sha256CertBar = new byte[32];
+        PackageIdentifier packageIdentifierBar =
+                new PackageIdentifier(packageNameBar, sha256CertBar);
 
         // Create AppSearchImpl with visibility document version 1;
         AppSearchImpl appSearchImplInV1 =
@@ -136,23 +140,20 @@ public class VisibilityStoreMigrationHelperFromV1Test {
                         ALWAYS_OPTIMIZE,
                         /*visibilityChecker=*/ null);
 
-        VisibilityDocument actualDocument =
-                new VisibilityDocument.Builder(
-                                appSearchImpl.getDocument(
-                                        VisibilityStore.VISIBILITY_PACKAGE_NAME,
-                                        VisibilityStore.VISIBILITY_DATABASE_NAME,
-                                        VisibilityDocument.NAMESPACE,
-                                        /*id=*/ prefix + "Schema",
-                                        /*typePropertyPaths=*/ Collections.emptyMap()))
-                        .build();
+        VisibilityConfig actualConfig =
+                VisibilityConfig.createVisibilityConfig(
+                        appSearchImpl.getDocument(
+                                VisibilityStore.VISIBILITY_PACKAGE_NAME,
+                                VisibilityStore.VISIBILITY_DATABASE_NAME,
+                                VisibilityConfig.VISIBILITY_DOCUMENT_NAMESPACE,
+                                /*id=*/ prefix + "Schema",
+                                /*typePropertyPaths=*/ Collections.emptyMap()),
+                        null);
 
-        assertThat(actualDocument.isNotDisplayedBySystem()).isTrue();
-        assertThat(actualDocument.getPackageNames())
-                .asList()
-                .containsExactly(packageNameFoo, packageNameBar);
-        assertThat(actualDocument.getSha256Certs())
-                .isEqualTo(new byte[][] {sha256CertFoo, sha256CertBar});
-        assertThat(actualDocument.getVisibleToPermissions())
+        assertThat(actualConfig.isNotDisplayedBySystem()).isTrue();
+        assertThat(actualConfig.getVisibleToPackages())
+                .containsExactly(packageIdentifierFoo, packageIdentifierBar);
+        assertThat(actualConfig.getVisibleToPermissions())
                 .containsExactlyElementsIn(
                         ImmutableSet.of(
                                 ImmutableSet.of(

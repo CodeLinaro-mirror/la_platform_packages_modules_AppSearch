@@ -43,8 +43,9 @@ import android.app.appsearch.SearchSpec;
 import android.app.appsearch.SearchSuggestionResult;
 import android.app.appsearch.SearchSuggestionSpec;
 import android.app.appsearch.SetSchemaResponse;
+import android.app.appsearch.SetSchemaResponse.MigrationFailure;
 import android.app.appsearch.StorageInfo;
-import android.app.appsearch.VisibilityDocument;
+import android.app.appsearch.VisibilityConfig;
 import android.app.appsearch.aidl.AppSearchAttributionSource;
 import android.app.appsearch.aidl.AppSearchResultParcel;
 import android.app.appsearch.aidl.DocumentsParcel;
@@ -54,6 +55,7 @@ import android.app.appsearch.aidl.IAppSearchObserverProxy;
 import android.app.appsearch.aidl.IAppSearchResultCallback;
 import android.app.appsearch.exceptions.AppSearchException;
 import android.app.appsearch.observer.ObserverSpec;
+import android.app.appsearch.safeparcel.GenericDocumentParcel;
 import android.app.appsearch.stats.SchemaMigrationStats;
 import android.app.appsearch.util.LogUtil;
 import android.content.BroadcastReceiver;
@@ -65,7 +67,6 @@ import android.content.pm.PackageManager;
 import android.content.pm.PackageStats;
 import android.net.Uri;
 import android.os.Binder;
-import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.SystemClock;
@@ -82,6 +83,8 @@ import com.android.server.appsearch.external.localstorage.stats.SetSchemaStats;
 import com.android.server.appsearch.external.localstorage.visibilitystore.VisibilityStore;
 import com.android.server.appsearch.observer.AppSearchObserverProxy;
 import com.android.server.appsearch.stats.StatsCollector;
+import com.android.server.appsearch.transformer.EnterpriseSearchResultPageTransformer;
+import com.android.server.appsearch.transformer.EnterpriseSearchSpecTransformer;
 import com.android.server.appsearch.util.AdbDumpUtil;
 import com.android.server.appsearch.util.ApiCallRecord;
 import com.android.server.appsearch.util.ExceptionUtil;
@@ -154,7 +157,8 @@ public class AppSearchManagerService extends SystemService {
     public void onStart() {
         publishBinderService(Context.APP_SEARCH_SERVICE, new Stub());
         mPackageManager = getContext().getPackageManager();
-        mServiceImplHelper = new ServiceImplHelper(mContext, mExecutorManager);
+        mServiceImplHelper = new ServiceImplHelper(mContext, mExecutorManager,
+                mAppSearchEnvironment);
         mAppSearchUserInstanceManager = AppSearchUserInstanceManager.getInstance();
         registerReceivers();
         LocalManagerRegistry.getManager(StorageStatsManagerLocal.class)
@@ -343,8 +347,8 @@ public class AppSearchManagerService extends SystemService {
         public void setSchema(
                 @NonNull AppSearchAttributionSource callerAttributionSource,
                 @NonNull String databaseName,
-                @NonNull List<Bundle> schemaBundles,
-                @NonNull List<VisibilityDocument> visibilityDocuments,
+                @NonNull List<AppSearchSchema> schemas,
+                @NonNull List<VisibilityConfig> visibilityConfigs,
                 boolean forceOverride,
                 int schemaVersion,
                 @NonNull UserHandle userHandle,
@@ -353,8 +357,8 @@ public class AppSearchManagerService extends SystemService {
                 @NonNull IAppSearchResultCallback callback) {
             Objects.requireNonNull(callerAttributionSource);
             Objects.requireNonNull(databaseName);
-            Objects.requireNonNull(schemaBundles);
-            Objects.requireNonNull(visibilityDocuments);
+            Objects.requireNonNull(schemas);
+            Objects.requireNonNull(visibilityConfigs);
             Objects.requireNonNull(userHandle);
             Objects.requireNonNull(callback);
 
@@ -387,27 +391,20 @@ public class AppSearchManagerService extends SystemService {
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
                 try {
-                    long rebuildFromBundleLatencyStartTimeMillis = SystemClock.elapsedRealtime();
-                    List<AppSearchSchema> schemas = new ArrayList<>(schemaBundles.size());
-                    for (int i = 0; i < schemaBundles.size(); i++) {
-                        schemas.add(new AppSearchSchema(schemaBundles.get(i)));
-                    }
-                    long rebuildFromBundleLatencyEndTimeMillis = SystemClock.elapsedRealtime();
-
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
                     InternalSetSchemaResponse internalSetSchemaResponse =
                             instance.getAppSearchImpl().setSchema(
                                     callingPackageName,
                                     databaseName,
                                     schemas,
-                                    visibilityDocuments,
+                                    visibilityConfigs,
                                     forceOverride,
                                     schemaVersion,
                                     setSchemaStatsBuilder);
                     ++operationSuccessCount;
-                    invokeCallbackOnResult(callback,
-                            AppSearchResult.newSuccessfulResult(
-                                    internalSetSchemaResponse.getBundle()));
+                    invokeCallbackOnResult(
+                            callback,
+                            AppSearchResult.newSuccessfulResult(internalSetSchemaResponse));
 
                     // Schedule a task to dispatch change notifications. See requirements for where
                     // the method is called documented in the method description.
@@ -430,9 +427,8 @@ public class AppSearchManagerService extends SystemService {
                             .setExecutorAcquisitionLatencyMillis(
                                     (int) (waitExecutorEndTimeMillis
                                             - waitExecutorStartTimeMillis))
-                            .setRebuildFromBundleLatencyMillis(
-                                    (int) (rebuildFromBundleLatencyEndTimeMillis
-                                            - rebuildFromBundleLatencyStartTimeMillis))
+                            // This operation no longer exists, so this latency is always 0
+                            .setRebuildFromBundleLatencyMillis(0)
                             .setDispatchChangeNotificationsLatencyMillis(
                                     (int) (dispatchNotificationLatencyEndTimeMillis
                                             - dispatchNotificationLatencyStartTimeMillis))
@@ -485,6 +481,7 @@ public class AppSearchManagerService extends SystemService {
                 @NonNull String databaseName,
                 @NonNull UserHandle userHandle,
                 @ElapsedRealtimeLong long binderCallStartTimeMillis,
+                boolean isForEnterprise,
                 @NonNull IAppSearchResultCallback callback) {
             Objects.requireNonNull(callerAttributionSource);
             Objects.requireNonNull(targetPackageName);
@@ -500,7 +497,15 @@ public class AppSearchManagerService extends SystemService {
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
-            boolean global = !callingPackageName.equals(targetPackageName);
+            // Get the enterprise user for enterprise calls
+            UserHandle userToQuery = mServiceImplHelper.getUserToQuery(isForEnterprise, targetUser);
+            if (userToQuery == null) {
+                // Return an empty response if we tried to and couldn't get the enterprise user
+                invokeCallbackOnResult(callback, AppSearchResult.newSuccessfulResult(
+                        new GetSchemaResponse.Builder().build()));
+                return;
+            }
+            boolean global = isGlobalCall(callingPackageName, targetPackageName, isForEnterprise);
             // We deny based on the calling package and calling database names. If the calling
             // package does not match the target package, then the call is global and the target
             // database is not a calling database.
@@ -519,7 +524,7 @@ public class AppSearchManagerService extends SystemService {
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
                 try {
-                    instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    instance = mAppSearchUserInstanceManager.getUserInstance(userToQuery);
 
                     boolean callerHasSystemAccess = instance.getVisibilityChecker()
                             .doesCallerHaveSystemAccess(callingPackageName);
@@ -528,11 +533,10 @@ public class AppSearchManagerService extends SystemService {
                                     targetPackageName,
                                     databaseName,
                                     new FrameworkCallerAccess(callerAttributionSource,
-                                            callerHasSystemAccess));
+                                            callerHasSystemAccess, isForEnterprise));
                     ++operationSuccessCount;
                     invokeCallbackOnResult(
-                            callback,
-                            AppSearchResult.newSuccessfulResult(response.getBundle()));
+                            callback, AppSearchResult.newSuccessfulResult(response));
                 } catch (AppSearchException | RuntimeException e) {
                     ++operationFailureCount;
                     AppSearchResult<Void> failedResult = throwableToFailedResult(e);
@@ -790,6 +794,7 @@ public class AppSearchManagerService extends SystemService {
                 @NonNull Map<String, List<String>> typePropertyPaths,
                 @NonNull UserHandle userHandle,
                 @ElapsedRealtimeLong long binderCallStartTimeMillis,
+                boolean isForEnterprise,
                 @NonNull IAppSearchBatchResultCallback callback) {
             Objects.requireNonNull(callerAttributionSource);
             Objects.requireNonNull(targetPackageName);
@@ -808,7 +813,18 @@ public class AppSearchManagerService extends SystemService {
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
-            boolean global = !callingPackageName.equals(targetPackageName);
+            // Get the enterprise user for enterprise calls
+            UserHandle userToQuery = mServiceImplHelper.getUserToQuery(isForEnterprise, targetUser);
+            if (userToQuery == null) {
+                // Return an empty batch result if we tried to and couldn't get the enterprise user
+                invokeCallbackOnResult(callback,
+                        new AppSearchBatchResult.Builder<String, GenericDocumentParcel>().build());
+                return;
+            }
+            // TODO(b/319315074): consider removing local getDocument and just use globalGetDocument
+            //  instead; this would simplify the code and assure us that enterprise calls definitely
+            //  go through visibility checks
+            boolean global = isGlobalCall(callingPackageName, targetPackageName, isForEnterprise);
             // We deny based on the calling package and calling database names. If the calling
             // package does not match the target package, then the call is global and the target
             // database is not a calling database.
@@ -827,9 +843,9 @@ public class AppSearchManagerService extends SystemService {
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
                 try {
-                    AppSearchBatchResult.Builder<String, Bundle> resultBuilder =
+                    AppSearchBatchResult.Builder<String, GenericDocumentParcel> resultBuilder =
                             new AppSearchBatchResult.Builder<>();
-                    instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    instance = mAppSearchUserInstanceManager.getUserInstance(userToQuery);
                     for (int i = 0; i < ids.size(); i++) {
                         String id = ids.get(i);
                         try {
@@ -838,6 +854,10 @@ public class AppSearchManagerService extends SystemService {
                                 boolean callerHasSystemAccess = instance.getVisibilityChecker()
                                         .doesCallerHaveSystemAccess(callerAttributionSource
                                                 .getPackageName());
+                                if (isForEnterprise) {
+                                    EnterpriseSearchSpecTransformer.transformPropertiesMap(
+                                            typePropertyPaths);
+                                }
                                 document = instance.getAppSearchImpl().globalGetDocument(
                                         targetPackageName,
                                         databaseName,
@@ -845,7 +865,12 @@ public class AppSearchManagerService extends SystemService {
                                         id,
                                         typePropertyPaths,
                                         new FrameworkCallerAccess(callerAttributionSource,
-                                                callerHasSystemAccess));
+                                                callerHasSystemAccess, isForEnterprise));
+                                if (isForEnterprise) {
+                                    document =
+                                            EnterpriseSearchResultPageTransformer.transformDocument(
+                                                    targetPackageName, databaseName, document);
+                                }
                             } else {
                                 document = instance.getAppSearchImpl().getDocument(
                                         targetPackageName,
@@ -855,13 +880,14 @@ public class AppSearchManagerService extends SystemService {
                                         typePropertyPaths);
                             }
                             ++operationSuccessCount;
-                            resultBuilder.setSuccess(id, document.getBundle());
+                            resultBuilder.setSuccess(id, document.getDocumentParcel());
                         } catch (AppSearchException | RuntimeException e) {
                             // Since we can only include one status code in the atom,
                             // for failures, we would just save the one for the last failure
                             // Also, we don't rethrow here, so we can keep trying for
                             // the following ones.
-                            AppSearchResult<Bundle> result = throwableToFailedResult(e);
+                            AppSearchResult<GenericDocumentParcel> result =
+                                    throwableToFailedResult(e);
                             resultBuilder.setResult(id, result);
                             statusCode = result.getResultCode();
                             ++operationFailureCount;
@@ -910,14 +936,14 @@ public class AppSearchManagerService extends SystemService {
                 @NonNull AppSearchAttributionSource callerAttributionSource,
                 @NonNull String databaseName,
                 @NonNull String queryExpression,
-                @NonNull Bundle searchSpecBundle,
+                @NonNull SearchSpec searchSpec,
                 @NonNull UserHandle userHandle,
                 @ElapsedRealtimeLong long binderCallStartTimeMillis,
                 @NonNull IAppSearchResultCallback callback) {
             Objects.requireNonNull(callerAttributionSource);
             Objects.requireNonNull(databaseName);
             Objects.requireNonNull(queryExpression);
-            Objects.requireNonNull(searchSpecBundle);
+            Objects.requireNonNull(searchSpec);
             Objects.requireNonNull(userHandle);
             Objects.requireNonNull(callback);
 
@@ -946,12 +972,12 @@ public class AppSearchManagerService extends SystemService {
                             callingPackageName,
                             databaseName,
                             queryExpression,
-                            new SearchSpec(searchSpecBundle),
+                            searchSpec,
                             instance.getLogger());
                     ++operationSuccessCount;
                     invokeCallbackOnResult(
                             callback,
-                            AppSearchResult.newSuccessfulResult(searchResultPage.getBundle()));
+                            AppSearchResult.newSuccessfulResult(searchResultPage));
                 } catch (AppSearchException | RuntimeException e) {
                     ++operationFailureCount;
                     AppSearchResult<Void> failedResult = throwableToFailedResult(e);
@@ -991,13 +1017,14 @@ public class AppSearchManagerService extends SystemService {
         public void globalQuery(
                 @NonNull AppSearchAttributionSource callerAttributionSource,
                 @NonNull String queryExpression,
-                @NonNull Bundle searchSpecBundle,
+                @NonNull SearchSpec searchSpec,
                 @NonNull UserHandle userHandle,
                 @ElapsedRealtimeLong long binderCallStartTimeMillis,
+                boolean isForEnterprise,
                 @NonNull IAppSearchResultCallback callback) {
             Objects.requireNonNull(callerAttributionSource);
             Objects.requireNonNull(queryExpression);
-            Objects.requireNonNull(searchSpecBundle);
+            Objects.requireNonNull(searchSpec);
             Objects.requireNonNull(userHandle);
             Objects.requireNonNull(callback);
 
@@ -1008,6 +1035,14 @@ public class AppSearchManagerService extends SystemService {
                     Objects.requireNonNull(callerAttributionSource.getPackageName());
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
+            }
+            // Get the enterprise user for enterprise calls
+            UserHandle userToQuery = mServiceImplHelper.getUserToQuery(isForEnterprise, targetUser);
+            if (userToQuery == null) {
+                // Return an empty result if we tried to and couldn't get the enterprise user
+                invokeCallbackOnResult(callback,
+                        AppSearchResult.newSuccessfulResult(new SearchResultPage()));
+                return;
             }
             if (checkCallDenied(callingPackageName, /* callingDatabaseName= */ null,
                     CallStats.CALL_TYPE_GLOBAL_SEARCH, callback, targetUser,
@@ -1022,21 +1057,27 @@ public class AppSearchManagerService extends SystemService {
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
                 try {
-                    instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
-
+                    instance = mAppSearchUserInstanceManager.getUserInstance(userToQuery);
                     boolean callerHasSystemAccess = instance.getVisibilityChecker()
                             .doesCallerHaveSystemAccess(callingPackageName);
-
+                    SearchSpec querySearchSpec =
+                            isForEnterprise ? EnterpriseSearchSpecTransformer.transformSearchSpec(
+                                    searchSpec) : searchSpec;
                     SearchResultPage searchResultPage = instance.getAppSearchImpl().globalQuery(
                             queryExpression,
-                            new SearchSpec(searchSpecBundle),
+                            querySearchSpec,
                             new FrameworkCallerAccess(callerAttributionSource,
-                                    callerHasSystemAccess),
+                                    callerHasSystemAccess, isForEnterprise),
                             instance.getLogger());
+                    if (isForEnterprise) {
+                        searchResultPage =
+                                EnterpriseSearchResultPageTransformer.transformSearchResultPage(
+                                        searchResultPage);
+                    }
                     ++operationSuccessCount;
                     invokeCallbackOnResult(
                             callback,
-                            AppSearchResult.newSuccessfulResult(searchResultPage.getBundle()));
+                            AppSearchResult.newSuccessfulResult(searchResultPage));
                 } catch (AppSearchException | RuntimeException e) {
                     ++operationFailureCount;
                     AppSearchResult<Void> failedResult = throwableToFailedResult(e);
@@ -1079,6 +1120,7 @@ public class AppSearchManagerService extends SystemService {
                 @AppSearchSchema.StringPropertyConfig.JoinableValueType int joinType,
                 @NonNull UserHandle userHandle,
                 @ElapsedRealtimeLong long binderCallStartTimeMillis,
+                boolean isForEnterprise,
                 @NonNull IAppSearchResultCallback callback) {
             Objects.requireNonNull(callerAttributionSource);
             Objects.requireNonNull(userHandle);
@@ -1092,7 +1134,16 @@ public class AppSearchManagerService extends SystemService {
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
-            boolean global = databaseName == null;
+            // Get the enterprise user for enterprise calls
+            UserHandle userToQuery = mServiceImplHelper.getUserToQuery(isForEnterprise, targetUser);
+            if (userToQuery == null) {
+                // Return an empty result if we tried to and couldn't get the enterprise user
+                invokeCallbackOnResult(callback,
+                        AppSearchResult.newSuccessfulResult(new SearchResultPage()));
+                return;
+            }
+            // Enterprise session calls are considered global for CallStats logging
+            boolean global = databaseName == null || isForEnterprise;
             int callType = global ? CallStats.CALL_TYPE_GLOBAL_GET_NEXT_PAGE
                     : CallStats.CALL_TYPE_GET_NEXT_PAGE;
             if (checkCallDenied(callingPackageName, databaseName, callType, callback, targetUser,
@@ -1118,15 +1169,20 @@ public class AppSearchManagerService extends SystemService {
                             .setJoinType(joinType);
                 }
                 try {
-                    instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    instance = mAppSearchUserInstanceManager.getUserInstance(userToQuery);
                     SearchResultPage searchResultPage =
                             instance.getAppSearchImpl().getNextPage(
                                     callingPackageName, nextPageToken,
                                     statsBuilder);
+                    if (isForEnterprise) {
+                        searchResultPage =
+                                EnterpriseSearchResultPageTransformer.transformSearchResultPage(
+                                        searchResultPage);
+                    }
                     ++operationSuccessCount;
                     invokeCallbackOnResult(
                             callback,
-                            AppSearchResult.newSuccessfulResult(searchResultPage.getBundle()));
+                            AppSearchResult.newSuccessfulResult(searchResultPage));
                 } catch (AppSearchException | RuntimeException e) {
                     ++operationFailureCount;
                     AppSearchResult<Void> failedResult = throwableToFailedResult(e);
@@ -1167,7 +1223,8 @@ public class AppSearchManagerService extends SystemService {
                 @NonNull AppSearchAttributionSource callerAttributionSource,
                 long nextPageToken,
                 @NonNull UserHandle userHandle,
-                @ElapsedRealtimeLong long binderCallStartTimeMillis) {
+                @ElapsedRealtimeLong long binderCallStartTimeMillis,
+                boolean isForEnterprise) {
             Objects.requireNonNull(callerAttributionSource);
             Objects.requireNonNull(userHandle);
 
@@ -1175,6 +1232,13 @@ public class AppSearchManagerService extends SystemService {
             try {
                 UserHandle targetUser = mServiceImplHelper.verifyIncomingCall(
                         callerAttributionSource, userHandle);
+                // Get the enterprise user for enterprise calls
+                UserHandle userToQuery = mServiceImplHelper.getUserToQuery(isForEnterprise,
+                        targetUser);
+                if (userToQuery == null) {
+                    // Return if we tried to and couldn't get the enterprise user
+                    return;
+                }
                 String callingPackageName =
                         Objects.requireNonNull(callerAttributionSource.getPackageName());
                 if (checkCallDenied(callingPackageName, /* callingDatabaseName= */ null,
@@ -1191,7 +1255,7 @@ public class AppSearchManagerService extends SystemService {
                     int operationSuccessCount = 0;
                     int operationFailureCount = 0;
                     try {
-                        instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                        instance = mAppSearchUserInstanceManager.getUserInstance(userToQuery);
                         instance.getAppSearchImpl().invalidateNextPageToken(
                                 callingPackageName, nextPageToken);
                         operationSuccessCount++;
@@ -1243,7 +1307,7 @@ public class AppSearchManagerService extends SystemService {
                 @NonNull String databaseName,
                 @NonNull ParcelFileDescriptor fileDescriptor,
                 @NonNull String queryExpression,
-                @NonNull Bundle searchSpecBundle,
+                @NonNull SearchSpec searchSpec,
                 @NonNull UserHandle userHandle,
                 @ElapsedRealtimeLong long binderCallStartTimeMillis,
                 @NonNull IAppSearchResultCallback callback) {
@@ -1251,7 +1315,7 @@ public class AppSearchManagerService extends SystemService {
             Objects.requireNonNull(databaseName);
             Objects.requireNonNull(fileDescriptor);
             Objects.requireNonNull(queryExpression);
-            Objects.requireNonNull(searchSpecBundle);
+            Objects.requireNonNull(searchSpec);
             Objects.requireNonNull(userHandle);
             Objects.requireNonNull(callback);
 
@@ -1285,13 +1349,13 @@ public class AppSearchManagerService extends SystemService {
                                 callingPackageName,
                                 databaseName,
                                 queryExpression,
-                                new SearchSpec(searchSpecBundle),
+                                searchSpec,
                                 /* logger= */ null);
                         while (!searchResultPage.getResults().isEmpty()) {
                             for (int i = 0; i < searchResultPage.getResults().size(); i++) {
-                                AppSearchMigrationHelper.writeBundleToOutputStream(
-                                        outputStream, searchResultPage.getResults().get(i)
-                                                .getGenericDocument().getBundle());
+                                AppSearchMigrationHelper.writeDocumentToOutputStream(
+                                        outputStream,
+                                        searchResultPage.getResults().get(i).getGenericDocument());
                             }
                             operationSuccessCount += searchResultPage.getResults().size();
                             // TODO(b/173532925): Implement logging for statsBuilder
@@ -1383,7 +1447,7 @@ public class AppSearchManagerService extends SystemService {
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
 
                     GenericDocument document;
-                    ArrayList<Bundle> migrationFailureBundles = new ArrayList<>();
+                    ArrayList<MigrationFailure> migrationFailures = new ArrayList<>();
                     try (DataInputStream inputStream = new DataInputStream(
                             new FileInputStream(fileDescriptor.getFileDescriptor()))) {
                         while (true) {
@@ -1410,12 +1474,11 @@ public class AppSearchManagerService extends SystemService {
                                 ++operationFailureCount;
                                 AppSearchResult<Void> failedResult = throwableToFailedResult(e);
                                 statusCode = failedResult.getResultCode();
-                                migrationFailureBundles.add(new SetSchemaResponse.MigrationFailure(
+                                migrationFailures.add(new SetSchemaResponse.MigrationFailure(
                                         document.getNamespace(),
                                         document.getId(),
                                         document.getSchemaType(),
-                                        failedResult)
-                                        .getBundle());
+                                        failedResult));
                             }
                         }
                     }
@@ -1423,9 +1486,9 @@ public class AppSearchManagerService extends SystemService {
 
                     schemaMigrationStatsBuilder
                             .setTotalSuccessMigratedDocumentCount(operationSuccessCount)
-                            .setMigrationFailureCount(migrationFailureBundles.size());
+                            .setMigrationFailureCount(migrationFailures.size());
                     invokeCallbackOnResult(callback,
-                            AppSearchResult.newSuccessfulResult(migrationFailureBundles));
+                            AppSearchResult.newSuccessfulResult(migrationFailures));
                 } catch (AppSearchException | IOException | RuntimeException e) {
                     ++operationFailureCount;
                     AppSearchResult<Void> failedResult = throwableToFailedResult(e);
@@ -1780,14 +1843,14 @@ public class AppSearchManagerService extends SystemService {
                 @NonNull AppSearchAttributionSource callerAttributionSource,
                 @NonNull String databaseName,
                 @NonNull String queryExpression,
-                @NonNull Bundle searchSpecBundle,
+                @NonNull SearchSpec searchSpec,
                 @NonNull UserHandle userHandle,
                 @ElapsedRealtimeLong long binderCallStartTimeMillis,
                 @NonNull IAppSearchResultCallback callback) {
             Objects.requireNonNull(callerAttributionSource);
             Objects.requireNonNull(databaseName);
             Objects.requireNonNull(queryExpression);
-            Objects.requireNonNull(searchSpecBundle);
+            Objects.requireNonNull(searchSpec);
             Objects.requireNonNull(userHandle);
             Objects.requireNonNull(callback);
 
@@ -1818,7 +1881,7 @@ public class AppSearchManagerService extends SystemService {
                             callingPackageName,
                             databaseName,
                             queryExpression,
-                            new SearchSpec(searchSpecBundle),
+                            searchSpec,
                             /* removeStatsBuilder= */ null);
                     // Now that the batch has been written. Persist the newly written data.
                     instance.getAppSearchImpl().persistToDisk(PersistType.Code.LITE);
@@ -2065,8 +2128,8 @@ public class AppSearchManagerService extends SystemService {
                     boolean callerHasSystemAccess = instance.getVisibilityChecker()
                             .doesCallerHaveSystemAccess(callingPackageName);
                     instance.getAppSearchImpl().registerObserverCallback(
-                            new FrameworkCallerAccess(
-                                    callerAttributionSource, callerHasSystemAccess),
+                            new FrameworkCallerAccess(callerAttributionSource,
+                                    callerHasSystemAccess, /*isForEnterprise=*/ false),
                             targetPackageName,
                             observerSpec,
                             mExecutorManager.getOrCreateUserExecutor(targetUser),
@@ -2542,6 +2605,21 @@ public class AppSearchManagerService extends SystemService {
                 }
             }
         });
+    }
+
+    /**
+     * An API call is considered global if the calling package and target package names do not
+     * match.
+     * <p>
+     * Enterprise session calls do not necessarily have access to same-package data; therefore, even
+     * if the calling and target packages are the same, enterprise session calls must always be
+     * global to go through the proper visibility checks. (Enterprise session calls are also always
+     * considered global for CallStats logging.)
+     */
+    @BinderThread
+    private boolean isGlobalCall(@NonNull String callingPackageName,
+            @NonNull String targetPackageName, boolean isForEnterprise) {
+        return !callingPackageName.equals(targetPackageName) || isForEnterprise;
     }
 
     /**

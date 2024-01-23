@@ -26,8 +26,10 @@ import android.app.appsearch.aidl.IAppSearchResultCallback;
 import android.app.appsearch.aidl.DocumentsParcel;
 import android.app.appsearch.observer.ObserverSpec;
 import android.app.appsearch.stats.SchemaMigrationStats;
+import android.app.appsearch.AppSearchSchema;
+import android.app.appsearch.SearchSpec;
 import android.app.appsearch.SearchSuggestionSpec;
-import android.app.appsearch.VisibilityDocument;
+import android.app.appsearch.VisibilityConfig;
 import android.content.AttributionSource;
 import android.os.ParcelFileDescriptor;
 
@@ -53,8 +55,9 @@ interface IAppSearchManager {
      *
      * @param callerAttributionSource The permission identity of the package that owns this schema.
      * @param databaseName  The name of the database where this schema lives.
-     * @param schemaBundles List of {@link AppSearchSchema} bundles.
-     * @param visibilityDocs List of {@link VisibilityDocument} docs.
+     * @param schemas List of {@link AppSearchSchema} objects.
+     * @param visibilityConfigs List of {@link VisibilityConfig} objects defining the visibility
+     *     for the schema types.
      * @param forceOverride Whether to apply the new schema even if it is incompatible. All
      *     incompatible documents will be deleted.
      * @param schemaVersion  The overall schema version number of the request.
@@ -63,14 +66,13 @@ interface IAppSearchManager {
      * @param schemaMigrationCallType Indicates how a SetSchema call relative to SchemaMigration
      *     case.
      * @param callback {@link IAppSearchResultCallback#onResult} will be called with an
-     *     {@link AppSearchResult}&lt;{@link Bundle}&gt;, where the value are
-     *     {@link SetSchemaResponse} bundle.
+     *     {@link AppSearchResult}&lt;{@link InternalSetSchemaResponse}&gt;.
      */
     void setSchema(
         in AppSearchAttributionSource callerAttributionSource,
         in String databaseName,
-        in List<Bundle> schemaBundles,
-        in List<VisibilityDocument> visibilityDocs,
+        in List<AppSearchSchema> schemas,
+        in List<VisibilityConfig> visibilityConfigs,
         boolean forceOverride,
         in int schemaVersion,
         in UserHandle userHandle,
@@ -86,6 +88,7 @@ interface IAppSearchManager {
      * @param databaseName  The name of the database to retrieve.
      * @param userHandle Handle of the calling user
      * @param binderCallStartTimeMillis start timestamp of binder call in Millis
+     * @param isForEnterprise Whether to query the user's enterprise profile AppSearch instance
      * @param callback {@link IAppSearchResultCallback#onResult} will be called with an
      *     {@link AppSearchResult}&lt;{@link Bundle}&gt; where the bundle is a GetSchemaResponse.
      */
@@ -95,6 +98,7 @@ interface IAppSearchManager {
         in String databaseName,
         in UserHandle userHandle,
         in long binderCallStartTimeMillis,
+        in boolean isForEnterprise,
         in IAppSearchResultCallback callback);
 
     /**
@@ -151,6 +155,7 @@ interface IAppSearchManager {
      *     result.
      * @param userHandle Handle of the calling user.
      * @param binderCallStartTimeMillis start timestamp of binder call in Millis.
+     * @param isForEnterprise Whether to query the user's enterprise profile AppSearch instance
      * @param callback
      *     If the call fails to start, {@link IAppSearchBatchResultCallback#onSystemError}
      *     will be called with the cause throwable. Otherwise,
@@ -167,6 +172,7 @@ interface IAppSearchManager {
         in Map<String, List<String>> typePropertyPaths,
         in UserHandle userHandle,
         in long binderCallStartTimeMillis,
+        in boolean isForEnterprise,
         in IAppSearchBatchResultCallback callback);
 
     /**
@@ -175,17 +181,17 @@ interface IAppSearchManager {
      * @param callerAttributionSource The permission identity of the package to query over.
      * @param databaseName The databaseName this query for.
      * @param queryExpression String to search for
-     * @param searchSpecBundle SearchSpec bundle
+     * @param searchSpec SearchSpec
      * @param userHandle Handle of the calling user
      * @param binderCallStartTimeMillis start timestamp of binder call in Millis
-     * @param callback {@link AppSearchResult}&lt;{@link Bundle}&gt; of performing this
+     * @param callback {@link AppSearchResult}&lt;{@link SearchResultPage}&gt; of performing this
      *         operation.
      */
     void query(
         in AppSearchAttributionSource callerAttributionSource,
         in String databaseName,
         in String queryExpression,
-        in Bundle searchSpecBundle,
+        in SearchSpec searchSpec,
         in UserHandle userHandle,
         in long binderCallStartTimeMillis,
         in IAppSearchResultCallback callback);
@@ -196,18 +202,20 @@ interface IAppSearchManager {
      *
      * @param callerAttributionSource The permission identity of the package making the query.
      * @param queryExpression String to search for
-     * @param searchSpecBundle SearchSpec bundle
+     * @param searchSpec SearchSpec
      * @param userHandle Handle of the calling user
      * @param binderCallStartTimeMillis start timestamp of binder call in Millis
-     * @param callback {@link AppSearchResult}&lt;{@link Bundle}&gt; of performing this
+     * @param isForEnterprise Whether to query the user's enterprise profile AppSearch instance
+     * @param callback {@link AppSearchResult}&lt;{@link SearchResultPage}&gt; of performing this
      *         operation.
      */
     void globalQuery(
         in AppSearchAttributionSource callerAttributionSource,
         in String queryExpression,
-        in Bundle searchSpecBundle,
+        in SearchSpec searchSpec,
         in UserHandle userHandle,
         in long binderCallStartTimeMillis,
+        in boolean isForEnterprise,
         in IAppSearchResultCallback callback);
 
     /**
@@ -222,7 +230,8 @@ interface IAppSearchManager {
      * @param joinType the type of join performed. 0 if no join is performed
      * @param userHandle Handle of the calling user
      * @param binderCallStartTimeMillis start timestamp of binder call in Millis
-     * @param callback {@link AppSearchResult}&lt;{@link Bundle}&gt; of performing this
+     * @param isForEnterprise Whether to query the user's enterprise profile AppSearch instance
+     * @param callback {@link AppSearchResult}&lt;{@link SearchResultPage}&gt; of performing this
      *                  operation.
      */
     void getNextPage(
@@ -232,6 +241,7 @@ interface IAppSearchManager {
         in int joinType,
         in UserHandle userHandle,
         in long binderCallStartTimeMillis,
+        in boolean isForEnterprise,
         in IAppSearchResultCallback callback);
 
     /**
@@ -243,12 +253,14 @@ interface IAppSearchManager {
      *                      Invalidated.
      * @param userHandle Handle of the calling user
      * @param binderCallStartTimeMillis start timestamp of binder call in Millis
+     * @param isForEnterprise Whether to query the user's enterprise profile AppSearch instance
      */
     void invalidateNextPageToken(
         in AppSearchAttributionSource callerAttributionSource,
         in long nextPageToken,
         in UserHandle userHandle,
-        in long binderCallStartTimeMillis);
+        in long binderCallStartTimeMillis,
+        in boolean isForEnterprise);
 
     /**
     * Searches a document based on a given specifications.
@@ -259,7 +271,7 @@ interface IAppSearchManager {
     * @param databaseName The databaseName this query for.
     * @param fileDescriptor The ParcelFileDescriptor where documents should be written to.
     * @param queryExpression String to search for.
-    * @param searchSpecBundle SearchSpec bundle.
+    * @param searchSpec SearchSpec
     * @param userHandle Handle of the calling user.
     * @param binderCallStartTimeMillis start timestamp of binder call in Millis
     * @param callback {@link IAppSearchResultCallback#onResult} will be called with an
@@ -270,7 +282,7 @@ interface IAppSearchManager {
         in String databaseName,
         in ParcelFileDescriptor fileDescriptor,
         in String queryExpression,
-        in Bundle searchSpecBundle,
+        in SearchSpec searchSpec,
         in UserHandle userHandle,
         in long binderCallStartTimeMillis,
         in IAppSearchResultCallback callback);
@@ -395,7 +407,7 @@ interface IAppSearchManager {
      * @param callerAttributionSource The permission identity of the package to query over.
      * @param databaseName The databaseName this query for.
      * @param queryExpression String to search for
-     * @param searchSpecBundle SearchSpec bundle
+     * @param searchSpec SearchSpec
      * @param userHandle Handle of the calling user
      * @param binderCallStartTimeMillis start timestamp of binder call in Millis
      * @param callback {@link IAppSearchResultCallback#onResult} will be called with an
@@ -405,7 +417,7 @@ interface IAppSearchManager {
         in AppSearchAttributionSource callerAttributionSource,
         in String databaseName,
         in String queryExpression,
-        in Bundle searchSpecBundle,
+        in SearchSpec searchSpec,
         in UserHandle userHandle,
         in long binderCallStartTimeMillis,
         in IAppSearchResultCallback callback);
