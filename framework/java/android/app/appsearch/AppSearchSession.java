@@ -28,6 +28,7 @@ import android.app.appsearch.aidl.IAppSearchBatchResultCallback;
 import android.app.appsearch.aidl.IAppSearchManager;
 import android.app.appsearch.aidl.IAppSearchResultCallback;
 import android.app.appsearch.exceptions.AppSearchException;
+import android.app.appsearch.safeparcel.GenericDocumentParcel;
 import android.app.appsearch.stats.SchemaMigrationStats;
 import android.app.appsearch.util.SchemaMigrationUtil;
 import android.os.Build;
@@ -166,7 +167,8 @@ public final class AppSearchSession implements Closeable {
         }
 
         // Extract a List<VisibilityConfig> from the request
-        List<VisibilityConfig> visibilityConfigs = VisibilityConfig.toVisibilityConfigs(request);
+        List<InternalVisibilityConfig> visibilityConfigs =
+                InternalVisibilityConfig.toInternalVisibilityConfigs(request);
         // No need to trigger migration if user never set migrator
         if (request.getMigrators().isEmpty()) {
             setSchemaNoMigrations(
@@ -295,7 +297,8 @@ public final class AppSearchSession implements Closeable {
         Objects.requireNonNull(callback);
         Preconditions.checkState(!mIsClosed, "AppSearchSession has already been closed");
         DocumentsParcel documentsParcel = new DocumentsParcel(
-            request.getGenericDocuments(), request.getTakenActionGenericDocuments());
+                toGenericDocumentParcels(request.getGenericDocuments()),
+                toGenericDocumentParcels(request.getTakenActionGenericDocuments()));
         try {
             mService.putDocuments(mCallerAttributionSource, mDatabaseName, documentsParcel,
                     mUserHandle,
@@ -823,7 +826,7 @@ public final class AppSearchSession implements Closeable {
     private void setSchemaNoMigrations(
             @NonNull SetSchemaRequest request,
             @NonNull List<AppSearchSchema> schemas,
-            @NonNull List<VisibilityConfig> visibilityConfigs,
+            @NonNull List<InternalVisibilityConfig> visibilityConfigs,
             @NonNull @CallbackExecutor Executor executor,
             @NonNull Consumer<AppSearchResult<SetSchemaResponse>> callback) {
         try {
@@ -884,7 +887,7 @@ public final class AppSearchSession implements Closeable {
     private void setSchemaWithMigrations(
             @NonNull SetSchemaRequest request,
             @NonNull List<AppSearchSchema> schemas,
-            @NonNull List<VisibilityConfig> visibilityConfigs,
+            @NonNull List<InternalVisibilityConfig> visibilityConfigs,
             @NonNull Executor workExecutor,
             @NonNull @CallbackExecutor Executor callbackExecutor,
             @NonNull Consumer<AppSearchResult<SetSchemaResponse>> callback) {
@@ -1099,5 +1102,15 @@ public final class AppSearchSession implements Closeable {
                         () -> callback.accept(AppSearchResult.throwableToFailedResult(e)));
             }
         });
+    }
+
+    @NonNull
+    private static List<GenericDocumentParcel> toGenericDocumentParcels(
+            List<GenericDocument> docs) {
+        List<GenericDocumentParcel> docParcels = new ArrayList<>(docs.size());
+        for (int i = 0; i < docs.size(); ++i) {
+            docParcels.add(docs.get(i).getDocumentParcel());
+        }
+        return docParcels;
     }
 }
