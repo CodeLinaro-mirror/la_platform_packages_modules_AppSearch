@@ -27,6 +27,7 @@ import static android.permission.PermissionManager.PERMISSION_GRANTED;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.admin.DevicePolicyManager;
+import android.app.appsearch.InternalVisibilityConfig;
 import android.app.appsearch.PackageIdentifier;
 import android.app.appsearch.SetSchemaRequest;
 import android.app.appsearch.VisibilityConfig;
@@ -78,42 +79,110 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
         }
 
         FrameworkCallerAccess frameworkCallerAccess = (FrameworkCallerAccess) callerAccess;
-        VisibilityConfig visibilityConfig = visibilityStore.getVisibility(prefixedSchema);
+        InternalVisibilityConfig internalVisibilityConfig =
+                visibilityStore.getVisibility(prefixedSchema);
 
         // If caller requires enterprise access, the given schema is only visible if caller has all
         // required permissions.
         if (frameworkCallerAccess.isForEnterprise()) {
-            return visibilityConfig != null && isSchemaVisibleToPermission(visibilityConfig,
+            return internalVisibilityConfig != null && isSchemaVisibleToPermission(
+                    internalVisibilityConfig.getVisibilityConfig(),
                     frameworkCallerAccess.getCallingAttributionSource(),
                     /*checkEnterpriseAccess=*/ true);
         }
 
-        if (visibilityConfig == null) {
+        if (internalVisibilityConfig == null) {
             // The target schema doesn't exist yet. We will treat it as default setting and the only
             // accessible case is when the caller has system access.
             return frameworkCallerAccess.doesCallerHaveSystemAccess();
         }
 
+        // Check whether the calling package has system access and the target schema is visible to
+        // the system.
         if (frameworkCallerAccess.doesCallerHaveSystemAccess() &&
-                !visibilityConfig.isNotDisplayedBySystem()) {
+                !internalVisibilityConfig.isNotDisplayedBySystem()) {
             return true;
         }
 
-        if (isSchemaPubliclyVisibleFromPackage(visibilityConfig, frameworkCallerAccess)) {
-            // The calling package has visibility to the package providing the schema.
+        // Check OR visibility settings. Caller could access if they match ANY of the requirements
+        // in the visibilityConfig.
+        VisibilityConfig visibilityConfig = internalVisibilityConfig.getVisibilityConfig();
+        if (checkMatchAnyVisibilityConfig(
+                frameworkCallerAccess, visibilityConfig)) {
             return true;
         }
 
+        // Check AND visibility settings. Caller could access if they match ALL of the requirements
+        // in the visibilityConfig.
+        Set<VisibilityConfig> visibleToConfigs = internalVisibilityConfig.getVisibleToConfigs();
+        for (VisibilityConfig visibleToConfig : visibleToConfigs) {
+            if (checkMatchAllVisibilityConfig(
+                    frameworkCallerAccess, visibleToConfig)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**  Check whether the caller math ANY of the visibility requirements.     */
+    private boolean checkMatchAnyVisibilityConfig(
+        @NonNull FrameworkCallerAccess frameworkCallerAccess,
+        @NonNull VisibilityConfig visibilityConfig) {
         if (isSchemaVisibleToPackages(visibilityConfig,
-                frameworkCallerAccess.getCallingAttributionSource().getUid())) {
+            frameworkCallerAccess.getCallingAttributionSource().getUid())) {
             // The caller is in the allow list and has access to the given schema.
             return true;
         }
 
         // Check whether caller has all required permissions for the given schema.
-        return isSchemaVisibleToPermission(visibilityConfig,
+        if(isSchemaVisibleToPermission(visibilityConfig,
                 frameworkCallerAccess.getCallingAttributionSource(),
-                /*checkEnterpriseAccess=*/ false);
+                /*checkEnterpriseAccess=*/ false)) {
+            return true;
+        }
+
+        // Check whether the calling package has visibility to the package providing the schema.
+        return isSchemaPubliclyVisibleFromPackage(visibilityConfig, frameworkCallerAccess);
+    }
+
+    /**  Check whether the caller math ALL of the visibility requirements.     */
+    private boolean checkMatchAllVisibilityConfig(
+        @NonNull FrameworkCallerAccess frameworkCallerAccess,
+        @NonNull VisibilityConfig visibilityConfig) {
+
+        // We will skip following checks if user never specific them. But the caller should has
+        // passed at least one check to get the access.
+        boolean hasPassedCheck = false;
+
+        // Check whether the caller is in the allow list and has access to the given schema.
+        if (!visibilityConfig.getVisibleToPackages().isEmpty()) {
+            if (!isSchemaVisibleToPackages(visibilityConfig,
+                frameworkCallerAccess.getCallingAttributionSource().getUid())) {
+                return false;// Return early for the 'ALL' case.
+            }
+            hasPassedCheck = true;
+        }
+
+        // Check whether caller has all required permissions for the given schema.
+        // We could directly return the boolean results since it is the last checking.
+        if (!visibilityConfig.getVisibleToPermissions().isEmpty()) {
+            if (!isSchemaVisibleToPermission(visibilityConfig,
+                frameworkCallerAccess.getCallingAttributionSource(),
+                /*checkEnterpriseAccess=*/ false)) {
+                return false;// Return early for the 'ALL' case.
+            }
+            hasPassedCheck = true;
+        }
+
+        // Check whether the calling package has visibility to the package providing the schema.
+        if (visibilityConfig.getPubliclyVisibleTargetPackage() != null) {
+            if (!isSchemaPubliclyVisibleFromPackage(visibilityConfig, frameworkCallerAccess)) {
+                return false; // Return early for the 'ALL' case.
+            }
+            hasPassedCheck = true;
+        }
+
+        return hasPassedCheck;
     }
 
     private boolean isSchemaPubliclyVisibleFromPackage(@NonNull VisibilityConfig visibilityConfig,
