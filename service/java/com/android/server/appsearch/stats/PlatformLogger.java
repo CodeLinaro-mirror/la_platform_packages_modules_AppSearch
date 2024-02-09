@@ -18,6 +18,7 @@ package com.android.server.appsearch.stats;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.appsearch.annotation.CanIgnoreReturnValue;
 import android.app.appsearch.exceptions.AppSearchException;
 import android.app.appsearch.stats.SchemaMigrationStats;
 import android.content.Context;
@@ -232,6 +233,7 @@ public final class PlatformLogger implements AppSearchLogger {
      * @return removed UID for the package, or {@code INVALID_UID} if package was not previously
      * cached.
      */
+    @CanIgnoreReturnValue
     public int removeCachedUidForPackage(@NonNull String packageName) {
         // TODO(b/173532925) This needs to be called when we get PACKAGE_REMOVED intent
         Objects.requireNonNull(packageName);
@@ -424,6 +426,7 @@ public final class PlatformLogger implements AppSearchLogger {
         String database = stats.getDatabase();
         try {
             int hashCodeForDatabase = calculateHashCodeMd5(database);
+            int hashCodeForSearchSourceLogTag = calculateHashCodeMd5(stats.getSearchSourceLogTag());
             AppSearchStatsLog.write(AppSearchStatsLog.APP_SEARCH_QUERY_STATS_REPORTED,
                     extraStats.mSamplingInterval,
                     extraStats.mSkippedSampleCount,
@@ -456,7 +459,8 @@ public final class PlatformLogger implements AppSearchLogger {
                     stats.getNativeToJavaJniLatencyMillis(),
                     stats.getJoinType(),
                     stats.getNumJoinedResultsCurrentPage(),
-                    stats.getJoinLatencyMillis());
+                    stats.getJoinLatencyMillis(),
+                    hashCodeForSearchSourceLogTag);
         } catch (NoSuchAlgorithmException | UnsupportedEncodingException e) {
             // TODO(b/184204720) report hashing error to statsd
             //  We need to set a special value(e.g. 0xFFFFFFFF) for the hashing of the database,
@@ -560,9 +564,6 @@ public final class PlatformLogger implements AppSearchLogger {
     static int calculateHashCodeMd5(@Nullable String str) throws
             NoSuchAlgorithmException, UnsupportedEncodingException {
         if (str == null) {
-            // Just return -1 if caller doesn't have database name
-            // For some stats like globalQuery, databaseName can be null.
-            // Since in atom it is an integer, we have to return something here.
             return -1;
         }
 

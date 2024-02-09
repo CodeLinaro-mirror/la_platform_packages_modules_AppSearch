@@ -17,11 +17,11 @@
 package android.app.appsearch.aidl;
 
 import android.annotation.NonNull;
-import android.app.appsearch.ParcelableUtil;
 import android.app.appsearch.GenericDocument;
+import android.app.appsearch.ParcelableUtil;
+import android.app.appsearch.safeparcel.GenericDocumentParcel;
 import android.os.Parcel;
 import android.os.Parcelable;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -37,13 +37,19 @@ import java.util.Objects;
  */
 public final class DocumentsParcel implements Parcelable {
     private final List<GenericDocument> mDocuments;
+    private final List<GenericDocument> mTakenActionGenericDocuments;
 
-    public DocumentsParcel(@NonNull List<GenericDocument> documents) {
+    public DocumentsParcel(
+        @NonNull List<GenericDocument> documents,
+        @NonNull List<GenericDocument> takenActionGenericDocuments)
+    {
         mDocuments = Objects.requireNonNull(documents);
+        mTakenActionGenericDocuments = Objects.requireNonNull(takenActionGenericDocuments);
     }
 
     private DocumentsParcel(@NonNull Parcel in) {
         mDocuments = readFromParcel(in);
+        mTakenActionGenericDocuments = readFromParcel(in);
     }
 
     private List<GenericDocument> readFromParcel(Parcel source) {
@@ -60,8 +66,9 @@ public final class DocumentsParcel implements Parcelable {
             List<GenericDocument> documentList = new ArrayList<>(size);
             for (int i = 0; i < size; i++) {
                 // Read document's bundle and convert them.
-                documentList.add(new GenericDocument(
-                        unmarshallParcel.readBundle(getClass().getClassLoader())));
+                GenericDocumentParcel genericDocumentParcel =
+                        unmarshallParcel.readParcelable(getClass().getClassLoader());
+                documentList.add(new GenericDocument(genericDocumentParcel));
             }
             return documentList;
         } finally {
@@ -69,7 +76,7 @@ public final class DocumentsParcel implements Parcelable {
         }
     }
 
-    public static final Creator<DocumentsParcel> CREATOR = new Creator<DocumentsParcel>() {
+    public static final Creator<DocumentsParcel> CREATOR = new Creator<>() {
         @Override
         public DocumentsParcel createFromParcel(Parcel in) {
             return new DocumentsParcel(in);
@@ -88,25 +95,27 @@ public final class DocumentsParcel implements Parcelable {
 
     @Override
     public void writeToParcel(Parcel dest, int flags) {
-        byte[] documentsByteArray = serializeToByteArray();
-        ParcelableUtil.writeBlob(dest, documentsByteArray);
+        ParcelableUtil.writeBlob(dest, serializeToByteArray(mDocuments));
+        ParcelableUtil.writeBlob(dest, serializeToByteArray(mTakenActionGenericDocuments));
     }
 
     /**
-     * Serializes the whole object, So that we can use Parcel.writeBlob() to send data. WriteBlob()
-     * could take care of whether to pass data via binder directly or Android shared memory if the
-     * data is large.
+     * Serializes the provided list of documents, So that we can use Parcel.writeBlob() to send
+     * data.
+     *
+     * <p>WriteBlob() will take care of whether to pass data via binder directly or Android shared
+     * memory if the data is large.
      */
     @NonNull
-    private byte[] serializeToByteArray() {
+    private static byte[] serializeToByteArray(List<GenericDocument> documents) {
         byte[] bytes;
         Parcel data = Parcel.obtain();
         try {
             // Save the number documents to the temporary Parcel object.
-            data.writeInt(mDocuments.size());
+            data.writeInt(documents.size());
             // Save all document's bundle to the temporary Parcel object.
-            for (int i = 0; i < mDocuments.size(); i++) {
-                data.writeBundle(mDocuments.get(i).getBundle());
+            for (int i = 0; i < documents.size(); i++) {
+                data.writeParcelable(documents.get(i).getDocumentParcel(), /*parcelableFlags=*/0);
             }
             bytes = data.marshall();
         } finally {
@@ -119,5 +128,11 @@ public final class DocumentsParcel implements Parcelable {
     @NonNull
     public List<GenericDocument> getDocuments() {
         return mDocuments;
+    }
+
+    /**  Returns the List of TakenActions as {@link GenericDocument}. */
+    @NonNull
+    public List<GenericDocument> getTakenActionGenericDocuments() {
+        return mTakenActionGenericDocuments;
     }
 }
