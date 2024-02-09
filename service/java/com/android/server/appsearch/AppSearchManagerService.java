@@ -32,6 +32,8 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.WorkerThread;
 import android.app.appsearch.AppSearchBatchResult;
+import android.app.appsearch.AppSearchEnvironment;
+import android.app.appsearch.AppSearchEnvironmentFactory;
 import android.app.appsearch.AppSearchMigrationHelper;
 import android.app.appsearch.AppSearchResult;
 import android.app.appsearch.AppSearchSchema;
@@ -149,7 +151,7 @@ public class AppSearchManagerService extends SystemService {
         mContext = context;
         mLifecycle = lifecycle;
         mAppSearchEnvironment = AppSearchEnvironmentFactory.getEnvironmentInstance();
-        mAppSearchConfig = AppSearchEnvironmentFactory.getConfigInstance(SHARED_EXECUTOR);
+        mAppSearchConfig = AppSearchComponentFactory.getConfigInstance(SHARED_EXECUTOR);
         mExecutorManager = new ExecutorManager(mAppSearchConfig);
     }
 
@@ -280,7 +282,7 @@ public class AppSearchManagerService extends SystemService {
                                     mAppSearchConfig);
                     instance.getAppSearchImpl().clearPackageData(packageName);
                     dispatchChangeNotifications(instance);
-                    instance.getLogger().removeCachedUidForPackage(packageName);
+                    instance.getLogger().removeCacheForPackage(packageName);
                 } catch (AppSearchException | RuntimeException e) {
                     Log.e(TAG, "Unable to remove data for package: " + packageName, e);
                     ExceptionUtil.handleException(e);
