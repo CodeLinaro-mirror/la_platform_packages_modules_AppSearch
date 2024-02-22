@@ -16,6 +16,7 @@
 
 package android.app.appsearch.aidl;
 
+import android.annotation.ElapsedRealtimeLong;
 import android.annotation.NonNull;
 import android.app.appsearch.safeparcel.AbstractSafeParcelable;
 import android.app.appsearch.safeparcel.SafeParcelable;
@@ -47,7 +48,7 @@ public class GetSchemaAidlRequest extends AbstractSafeParcelable {
     @Field(id = 4, getter = "getUserHandle")
     private final UserHandle mUserHandle;
     @Field(id = 5, getter = "getBinderCallStartTimeMillis")
-    private final long mBinderCallStartTimeMillis;
+    private final @ElapsedRealtimeLong long mBinderCallStartTimeMillis;
     @Field(id = 6, getter = "isForEnterprise")
     private final boolean mIsForEnterprise;
 
@@ -57,7 +58,7 @@ public class GetSchemaAidlRequest extends AbstractSafeParcelable {
             @Param(id = 2) @NonNull String targetPackageName,
             @Param(id = 3) @NonNull String databaseName,
             @Param(id = 4) @NonNull UserHandle userHandle,
-            @Param(id = 5) long binderCallStartTimeMillis,
+            @Param(id = 5) @ElapsedRealtimeLong long binderCallStartTimeMillis,
             @Param(id = 6) boolean isForEnterprise) {
         mCallerAttributionSource = Objects.requireNonNull(callerAttributionSource);
         mTargetPackageName = Objects.requireNonNull(targetPackageName);
@@ -87,6 +88,7 @@ public class GetSchemaAidlRequest extends AbstractSafeParcelable {
         return mUserHandle;
     }
 
+    @ElapsedRealtimeLong
     public long getBinderCallStartTimeMillis() {
         return mBinderCallStartTimeMillis;
     }
