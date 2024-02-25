@@ -22,8 +22,10 @@ import android.annotation.CallbackExecutor;
 import android.annotation.NonNull;
 import android.app.appsearch.aidl.AppSearchAttributionSource;
 import android.app.appsearch.aidl.AppSearchResultParcel;
+import android.app.appsearch.aidl.GetSchemaAidlRequest;
 import android.app.appsearch.aidl.IAppSearchManager;
 import android.app.appsearch.aidl.IAppSearchResultCallback;
+import android.app.appsearch.aidl.InitializeAidlRequest;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
@@ -74,9 +76,10 @@ public abstract class ReadOnlyGlobalSearchSession {
             @NonNull Consumer<AppSearchResult<Void>> callback) {
         try {
             mService.initialize(
-                    mCallerAttributionSource,
-                    mUserHandle,
-                    /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime(),
+                    new InitializeAidlRequest(
+                            mCallerAttributionSource,
+                            mUserHandle,
+                            /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime()),
                     new IAppSearchResultCallback.Stub() {
                         @Override
                         public void onResult(AppSearchResultParcel resultParcel) {
@@ -199,12 +202,13 @@ public abstract class ReadOnlyGlobalSearchSession {
         Objects.requireNonNull(callback);
         try {
             mService.getSchema(
-                    mCallerAttributionSource,
-                    packageName,
-                    databaseName,
-                    mUserHandle,
-                    /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime(),
-                    mIsForEnterprise,
+                    new GetSchemaAidlRequest(
+                            mCallerAttributionSource,
+                            packageName,
+                            databaseName,
+                            mUserHandle,
+                            /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime(),
+                            mIsForEnterprise),
                     new IAppSearchResultCallback.Stub() {
                         @Override
                         public void onResult(AppSearchResultParcel resultParcel) {

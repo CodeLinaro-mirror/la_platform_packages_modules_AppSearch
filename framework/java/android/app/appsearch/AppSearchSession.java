@@ -25,9 +25,16 @@ import android.app.appsearch.aidl.AppSearchAttributionSource;
 import android.app.appsearch.aidl.AppSearchBatchResultParcel;
 import android.app.appsearch.aidl.AppSearchResultParcel;
 import android.app.appsearch.aidl.DocumentsParcel;
+import android.app.appsearch.aidl.GetSchemaAidlRequest;
+import android.app.appsearch.aidl.GetNamespacesAidlRequest;
 import android.app.appsearch.aidl.IAppSearchBatchResultCallback;
 import android.app.appsearch.aidl.IAppSearchManager;
 import android.app.appsearch.aidl.IAppSearchResultCallback;
+import android.app.appsearch.aidl.InitializeAidlRequest;
+import android.app.appsearch.aidl.PersistToDiskAidlRequest;
+import android.app.appsearch.aidl.RemoveByDocumentIdAidlRequest;
+import android.app.appsearch.aidl.RemoveByDocumentIdAidlRequestCreator;
+import android.app.appsearch.aidl.RemoveByQueryAidlRequest;
 import android.app.appsearch.aidl.SetSchemaAidlRequest;
 import android.app.appsearch.exceptions.AppSearchException;
 import android.app.appsearch.safeparcel.GenericDocumentParcel;
@@ -118,9 +125,10 @@ public final class AppSearchSession implements Closeable {
             @NonNull Consumer<AppSearchResult<AppSearchSession>> callback) {
         try {
             mService.initialize(
-                    mCallerAttributionSource,
-                    mUserHandle,
-                    /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime(),
+                    new InitializeAidlRequest(
+                            mCallerAttributionSource,
+                            mUserHandle,
+                            /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime()),
                     new IAppSearchResultCallback.Stub() {
                         @Override
                         public void onResult(AppSearchResultParcel resultParcel) {
@@ -226,12 +234,13 @@ public final class AppSearchSession implements Closeable {
         Preconditions.checkState(!mIsClosed, "AppSearchSession has already been closed");
         try {
             mService.getSchema(
-                    mCallerAttributionSource,
-                    targetPackageName,
-                    mDatabaseName,
-                    mUserHandle,
-                    /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime(),
-                    /*isForEnterprise=*/ false,
+                    new GetSchemaAidlRequest(
+                            mCallerAttributionSource,
+                            targetPackageName,
+                            mDatabaseName,
+                            mUserHandle,
+                            /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime(),
+                            /*isForEnterprise=*/ false),
                     new IAppSearchResultCallback.Stub() {
                         @Override
                         public void onResult(AppSearchResultParcel resultParcel) {
@@ -267,10 +276,11 @@ public final class AppSearchSession implements Closeable {
         Preconditions.checkState(!mIsClosed, "AppSearchSession has already been closed");
         try {
             mService.getNamespaces(
-                    mCallerAttributionSource,
-                    mDatabaseName,
-                    mUserHandle,
-                    /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime(),
+                    new GetNamespacesAidlRequest(
+                            mCallerAttributionSource,
+                            mDatabaseName,
+                            mUserHandle,
+                            /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime()),
                     new IAppSearchResultCallback.Stub() {
                         @Override
                         public void onResult(AppSearchResultParcel resultParcel) {
@@ -693,12 +703,13 @@ public final class AppSearchSession implements Closeable {
         Preconditions.checkState(!mIsClosed, "AppSearchSession has already been closed");
         try {
             mService.removeByDocumentId(
-                    mCallerAttributionSource,
-                    mDatabaseName,
-                    request.getNamespace(),
-                    new ArrayList<>(request.getIds()),
-                    mUserHandle,
-                    /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime(),
+                    new RemoveByDocumentIdAidlRequest(
+                            mCallerAttributionSource,
+                            mDatabaseName,
+                            request.getNamespace(),
+                            new ArrayList<>(request.getIds()),
+                            mUserHandle,
+                            /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime()),
                     new IAppSearchBatchResultCallback.Stub() {
                         @Override
                         public void onResult(AppSearchBatchResultParcel resultParcel) {
@@ -758,12 +769,13 @@ public final class AppSearchSession implements Closeable {
         }
         try {
             mService.removeByQuery(
-                    mCallerAttributionSource,
-                    mDatabaseName,
-                    queryExpression,
-                    searchSpec,
-                    mUserHandle,
-                    /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime(),
+                    new RemoveByQueryAidlRequest(
+                            mCallerAttributionSource,
+                            mDatabaseName,
+                            queryExpression,
+                            searchSpec,
+                            mUserHandle,
+                            /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime()),
                     new IAppSearchResultCallback.Stub() {
                         @Override
                         public void onResult(AppSearchResultParcel resultParcel) {
@@ -828,9 +840,10 @@ public final class AppSearchSession implements Closeable {
         if (mIsMutated && !mIsClosed) {
             try {
                 mService.persistToDisk(
-                        mCallerAttributionSource,
-                        mUserHandle,
-                        /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime());
+                        new PersistToDiskAidlRequest(
+                                mCallerAttributionSource,
+                                mUserHandle,
+                                /*binderCallStartTimeMillis=*/ SystemClock.elapsedRealtime()));
                 mIsClosed = true;
             } catch (RemoteException e) {
                 Log.e(TAG, "Unable to close the AppSearchSession", e);
