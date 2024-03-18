@@ -78,8 +78,8 @@ public class SearchSpecToProtoConverterTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), mLocalStorageIcingOptionsConfig),
                         /*initStatsBuilder=*/ null,
-                        ALWAYS_OPTIMIZE,
-                        /*visibilityChecker=*/ null);
+                        /*visibilityChecker=*/ null,
+                        ALWAYS_OPTIMIZE);
     }
 
     @After
@@ -486,7 +486,7 @@ public class SearchSpecToProtoConverterTest {
     }
 
     @Test
-    public void testToResultSpecProto_projection_withJoinSpec_packageFilter() throws Exception {
+    public void testToResultSpecProto_projection_withJoinSpec_packageFilter() {
         String personPrefix = PrefixUtil.createPrefix("contacts", "database");
         String actionPrefix = PrefixUtil.createPrefix("aiai", "database");
 
@@ -541,6 +541,152 @@ public class SearchSpecToProtoConverterTest {
         assertThat(nestedResultSpecProto.getTypePropertyMasks(0).getSchemaType())
                 .isEqualTo("aiai$database/ContactAction");
         assertThat(nestedResultSpecProto.getTypePropertyMasks(0).getPaths(0)).isEqualTo("type");
+    }
+
+    // Previously, there was a bug where a wildcard filter would be added for each prefix in
+    // the SearchSpec.
+    @Test
+    public void testToResultSpecProto_projection_withWildcard() {
+        String personPrefix = PrefixUtil.createPrefix("contacts", "database");
+        String actionPrefix = PrefixUtil.createPrefix("aiai", "database");
+
+        SearchSpec searchSpec =
+                new SearchSpec.Builder()
+                        .addProjection(SearchSpec.SCHEMA_TYPE_WILDCARD, ImmutableList.of("name"))
+                        .build();
+
+        SearchSpecToProtoConverter converter =
+                new SearchSpecToProtoConverter(
+                        /*queryExpression=*/ "query",
+                        searchSpec,
+                        /*prefixes=*/ ImmutableSet.of(personPrefix, actionPrefix),
+                        /*namespaceMap=*/ ImmutableMap.of(),
+                        /*schemaMap=*/ ImmutableMap.of(),
+                        mLocalStorageIcingOptionsConfig);
+
+        ResultSpecProto resultSpecProto =
+                converter.toResultSpecProto(
+                        /*namespaceMap=*/ ImmutableMap.of(), /*schemaMap=*/ ImmutableMap.of());
+
+        assertThat(resultSpecProto.getTypePropertyMasksCount()).isEqualTo(1);
+        assertThat(resultSpecProto.getTypePropertyMasks(0).getSchemaType())
+                .isEqualTo(SearchSpec.SCHEMA_TYPE_WILDCARD);
+        assertThat(resultSpecProto.getTypePropertyMasks(0).getPaths(0)).isEqualTo("name");
+    }
+
+    // Previously, there was a bug where a wildcard filter would be added for each prefix in
+    // the SearchSpec. Therefore, if there were no prefixes, the wildcard filter would not be added
+    // either.
+    @Test
+    public void testToResultSpecProto_projectionNoPrefixes_withWildcard() {
+        SearchSpec searchSpec =
+                new SearchSpec.Builder()
+                        .addProjection(SearchSpec.SCHEMA_TYPE_WILDCARD, ImmutableList.of("name"))
+                        .build();
+
+        SearchSpecToProtoConverter converter =
+                new SearchSpecToProtoConverter(
+                        /*queryExpression=*/ "query",
+                        searchSpec,
+                        /*prefixes=*/ ImmutableSet.of(),
+                        /*namespaceMap=*/ ImmutableMap.of(),
+                        /*schemaMap=*/ ImmutableMap.of(),
+                        mLocalStorageIcingOptionsConfig);
+
+        ResultSpecProto resultSpecProto =
+                converter.toResultSpecProto(
+                        /*namespaceMap=*/ ImmutableMap.of(), /*schemaMap=*/ ImmutableMap.of());
+
+        assertThat(resultSpecProto.getTypePropertyMasksCount()).isEqualTo(1);
+        assertThat(resultSpecProto.getTypePropertyMasks(0).getSchemaType())
+                .isEqualTo(SearchSpec.SCHEMA_TYPE_WILDCARD);
+        assertThat(resultSpecProto.getTypePropertyMasks(0).getPaths(0)).isEqualTo("name");
+    }
+
+    @Test
+    public void testToSearchSpecProto_propertyFilter_withJoinSpec_packageFilter() {
+        String personPrefix = PrefixUtil.createPrefix("contacts", "database");
+        String actionPrefix = PrefixUtil.createPrefix("aiai", "database");
+
+        SchemaTypeConfigProto configProto = SchemaTypeConfigProto.getDefaultInstance();
+        Map<String, Map<String, SchemaTypeConfigProto>> schemaMap =
+                ImmutableMap.of(
+                        personPrefix, ImmutableMap.of(personPrefix + "Person", configProto),
+                        actionPrefix, ImmutableMap.of(actionPrefix + "ContactAction", configProto));
+        Map<String, Set<String>> namespaceMap =
+                ImmutableMap.of(
+                        personPrefix, ImmutableSet.of(personPrefix + "namespaceA"),
+                        actionPrefix, ImmutableSet.of(actionPrefix + "namespaceA"));
+
+        SearchSpec nestedSearchSpec =
+                new SearchSpec.Builder()
+                        .setResultGrouping(SearchSpec.GROUPING_TYPE_PER_PACKAGE, 10)
+                        .addFilterProperties("ContactAction", ImmutableList.of("type"))
+                        .build();
+
+        // Create a JoinSpec object and set it in the converter
+        JoinSpec joinSpec =
+                new JoinSpec.Builder("childPropertyExpression")
+                        .setNestedSearch("nestedQuery", nestedSearchSpec)
+                        .build();
+
+        SearchSpec searchSpec =
+                new SearchSpec.Builder()
+                        .setJoinSpec(joinSpec)
+                        .setResultGrouping(SearchSpec.GROUPING_TYPE_PER_PACKAGE, 10)
+                        .addFilterProperties("Person", ImmutableList.of("name"))
+                        .build();
+
+        SearchSpecToProtoConverter converter =
+                new SearchSpecToProtoConverter(
+                        /*queryExpression=*/ "query",
+                        searchSpec,
+                        /*prefixes=*/ ImmutableSet.of(personPrefix, actionPrefix),
+                        namespaceMap,
+                        schemaMap,
+                        mLocalStorageIcingOptionsConfig);
+
+        SearchSpecProto searchSpecProto = converter.toSearchSpecProto();
+
+        assertThat(searchSpecProto.getTypePropertyFiltersCount()).isEqualTo(1);
+        assertThat(searchSpecProto.getTypePropertyFilters(0).getSchemaType())
+                .isEqualTo("contacts$database/Person");
+        assertThat(searchSpecProto.getTypePropertyFilters(0).getPaths(0)).isEqualTo("name");
+
+        SearchSpecProto nestedSearchSpecProto =
+                searchSpecProto.getJoinSpec().getNestedSpec().getSearchSpec();
+        assertThat(nestedSearchSpecProto.getTypePropertyFiltersCount()).isEqualTo(1);
+        assertThat(nestedSearchSpecProto.getTypePropertyFilters(0).getSchemaType())
+                .isEqualTo("aiai$database/ContactAction");
+        assertThat(nestedSearchSpecProto.getTypePropertyFilters(0).getPaths(0)).isEqualTo("type");
+    }
+
+    @Test
+    public void testToSearchSpecProto_propertyFilter_withWildcard() {
+        String personPrefix = PrefixUtil.createPrefix("contacts", "database");
+        String actionPrefix = PrefixUtil.createPrefix("aiai", "database");
+
+        SearchSpec searchSpec =
+                new SearchSpec.Builder()
+                        .addFilterProperties(
+                                SearchSpec.SCHEMA_TYPE_WILDCARD, ImmutableList.of("name"))
+                        .build();
+
+        SearchSpecToProtoConverter converter =
+                new SearchSpecToProtoConverter(
+                        /*queryExpression=*/ "query",
+                        searchSpec,
+                        /*prefixes=*/ ImmutableSet.of(personPrefix, actionPrefix),
+                        /*namespaceMap=*/ ImmutableMap.of(),
+                        /*schemaMap=*/ ImmutableMap.of(),
+                        mLocalStorageIcingOptionsConfig);
+
+        SearchSpecProto searchSpecProto = converter.toSearchSpecProto();
+
+        assertThat(searchSpecProto.getTypePropertyFiltersCount()).isEqualTo(1);
+        assertThat(searchSpecProto.getTypePropertyFilters(0).getSchemaType())
+                .isEqualTo(SearchSpec.SCHEMA_TYPE_WILDCARD);
+        assertThat(searchSpecProto.getTypePropertyFilters(0).getPaths(0)).isEqualTo("name");
     }
 
     @Test

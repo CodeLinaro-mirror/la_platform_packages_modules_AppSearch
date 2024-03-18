@@ -26,17 +26,17 @@ import static android.permission.PermissionManager.PERMISSION_GRANTED;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.app.admin.DevicePolicyManager;
+import android.app.appsearch.InternalVisibilityConfig;
 import android.app.appsearch.PackageIdentifier;
+import android.app.appsearch.SchemaVisibilityConfig;
 import android.app.appsearch.SetSchemaRequest;
-import android.app.appsearch.VisibilityConfig;
 import android.app.appsearch.aidl.AppSearchAttributionSource;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.os.Build;
 import android.os.UserHandle;
 import android.permission.PermissionManager;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.appsearch.external.localstorage.visibilitystore.CallerAccess;
 import com.android.server.appsearch.external.localstorage.visibilitystore.VisibilityChecker;
 import com.android.server.appsearch.external.localstorage.visibilitystore.VisibilityStore;
@@ -56,12 +56,17 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
     // Context of the user that the call is being made as.
     private final Context mUserContext;
     private final PermissionManager mPermissionManager;
-    private final DevicePolicyManager mDpm;
+    private final PolicyChecker mPolicyChecker;
 
     public VisibilityCheckerImpl(@NonNull Context userContext) {
+        this(userContext, new PolicyCheckerImpl(userContext));
+    }
+
+    @VisibleForTesting
+    VisibilityCheckerImpl(@NonNull Context userContext, @NonNull PolicyChecker policyChecker) {
         mUserContext = Objects.requireNonNull(userContext);
         mPermissionManager = userContext.getSystemService(PermissionManager.class);
-        mDpm = userContext.getSystemService(DevicePolicyManager.class);
+        mPolicyChecker = policyChecker;
     }
 
     @Override
@@ -78,45 +83,115 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
         }
 
         FrameworkCallerAccess frameworkCallerAccess = (FrameworkCallerAccess) callerAccess;
-        VisibilityConfig visibilityConfig = visibilityStore.getVisibility(prefixedSchema);
+        InternalVisibilityConfig internalVisibilityConfig =
+                visibilityStore.getVisibility(prefixedSchema);
 
         // If caller requires enterprise access, the given schema is only visible if caller has all
         // required permissions.
         if (frameworkCallerAccess.isForEnterprise()) {
-            return visibilityConfig != null && isSchemaVisibleToPermission(visibilityConfig,
+            return internalVisibilityConfig != null && isSchemaVisibleToPermission(
+                    internalVisibilityConfig.getVisibilityConfig(),
                     frameworkCallerAccess.getCallingAttributionSource(),
                     /*checkEnterpriseAccess=*/ true);
         }
 
-        if (visibilityConfig == null) {
+        if (internalVisibilityConfig == null) {
             // The target schema doesn't exist yet. We will treat it as default setting and the only
             // accessible case is when the caller has system access.
             return frameworkCallerAccess.doesCallerHaveSystemAccess();
         }
 
+        // Check whether the calling package has system access and the target schema is visible to
+        // the system.
         if (frameworkCallerAccess.doesCallerHaveSystemAccess() &&
-                !visibilityConfig.isNotDisplayedBySystem()) {
+                !internalVisibilityConfig.isNotDisplayedBySystem()) {
             return true;
         }
 
-        if (isSchemaPubliclyVisibleFromPackage(visibilityConfig, frameworkCallerAccess)) {
-            // The calling package has visibility to the package providing the schema.
+        // Check OR visibility settings. Caller could access if they match ANY of the requirements
+        // in the visibilityConfig.
+        SchemaVisibilityConfig visibilityConfig = internalVisibilityConfig.getVisibilityConfig();
+        if (checkMatchAnyVisibilityConfig(
+                frameworkCallerAccess, visibilityConfig)) {
             return true;
         }
 
+        // Check AND visibility settings. Caller could access if they match ALL of the requirements
+        // in the visibilityConfig.
+        Set<SchemaVisibilityConfig> visibleToConfigs =
+                internalVisibilityConfig.getVisibleToConfigs();
+        for (SchemaVisibilityConfig visibleToConfig : visibleToConfigs) {
+            if (checkMatchAllVisibilityConfig(
+                    frameworkCallerAccess, visibleToConfig)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**  Check whether the caller math ANY of the visibility requirements.     */
+    private boolean checkMatchAnyVisibilityConfig(
+        @NonNull FrameworkCallerAccess frameworkCallerAccess,
+        @NonNull SchemaVisibilityConfig visibilityConfig) {
         if (isSchemaVisibleToPackages(visibilityConfig,
-                frameworkCallerAccess.getCallingAttributionSource().getUid())) {
+            frameworkCallerAccess.getCallingAttributionSource().getUid())) {
             // The caller is in the allow list and has access to the given schema.
             return true;
         }
 
         // Check whether caller has all required permissions for the given schema.
-        return isSchemaVisibleToPermission(visibilityConfig,
+        if(isSchemaVisibleToPermission(visibilityConfig,
                 frameworkCallerAccess.getCallingAttributionSource(),
-                /*checkEnterpriseAccess=*/ false);
+                /*checkEnterpriseAccess=*/ false)) {
+            return true;
+        }
+
+        // Check whether the calling package has visibility to the package providing the schema.
+        return isSchemaPubliclyVisibleFromPackage(visibilityConfig, frameworkCallerAccess);
     }
 
-    private boolean isSchemaPubliclyVisibleFromPackage(@NonNull VisibilityConfig visibilityConfig,
+    /**  Check whether the caller math ALL of the visibility requirements.     */
+    private boolean checkMatchAllVisibilityConfig(
+        @NonNull FrameworkCallerAccess frameworkCallerAccess,
+        @NonNull SchemaVisibilityConfig visibilityConfig) {
+
+        // We will skip following checks if user never specific them. But the caller should has
+        // passed at least one check to get the access.
+        boolean hasPassedCheck = false;
+
+        // Check whether the caller is in the allow list and has access to the given schema.
+        if (!visibilityConfig.getAllowedPackages().isEmpty()) {
+            if (!isSchemaVisibleToPackages(visibilityConfig,
+                frameworkCallerAccess.getCallingAttributionSource().getUid())) {
+                return false;// Return early for the 'ALL' case.
+            }
+            hasPassedCheck = true;
+        }
+
+        // Check whether caller has all required permissions for the given schema.
+        // We could directly return the boolean results since it is the last checking.
+        if (!visibilityConfig.getRequiredPermissions().isEmpty()) {
+            if (!isSchemaVisibleToPermission(visibilityConfig,
+                frameworkCallerAccess.getCallingAttributionSource(),
+                /*checkEnterpriseAccess=*/ false)) {
+                return false;// Return early for the 'ALL' case.
+            }
+            hasPassedCheck = true;
+        }
+
+        // Check whether the calling package has visibility to the package providing the schema.
+        if (visibilityConfig.getPubliclyVisibleTargetPackage() != null) {
+            if (!isSchemaPubliclyVisibleFromPackage(visibilityConfig, frameworkCallerAccess)) {
+                return false; // Return early for the 'ALL' case.
+            }
+            hasPassedCheck = true;
+        }
+
+        return hasPassedCheck;
+    }
+
+    private boolean isSchemaPubliclyVisibleFromPackage(
+            @NonNull SchemaVisibilityConfig visibilityConfig,
             FrameworkCallerAccess frameworkCallerAccess) {
         PackageIdentifier targetPackage = visibilityConfig.getPubliclyVisibleTargetPackage();
         if (targetPackage == null) {
@@ -157,9 +232,9 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
      * certificate was once used to sign the package, the package will still be granted access. This
      * does not handle packages that have been signed by multiple certificates.
      */
-    private boolean isSchemaVisibleToPackages(@NonNull VisibilityConfig visibilityConfig,
+    private boolean isSchemaVisibleToPackages(@NonNull SchemaVisibilityConfig visibilityConfig,
             int callerUid) {
-        List<PackageIdentifier> visibleToPackages = visibilityConfig.getVisibleToPackages();
+        List<PackageIdentifier> visibleToPackages = visibilityConfig.getAllowedPackages();
         for (int i = 0; i < visibleToPackages.size(); i++) {
             PackageIdentifier visibleToPackage = visibleToPackages.get(i);
 
@@ -195,10 +270,11 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
     /**
      * Returns whether the caller holds required permissions for the given schema.
      */
-    private boolean isSchemaVisibleToPermission(@NonNull VisibilityConfig visibilityConfig,
+    private boolean isSchemaVisibleToPermission(
+            @NonNull SchemaVisibilityConfig visibilityConfig,
             @Nullable AppSearchAttributionSource callerAttributionSource,
             boolean checkEnterpriseAccess) {
-        Set<Set<Integer>> visibleToPermissions = visibilityConfig.getVisibleToPermissions();
+        Set<Set<Integer>> visibleToPermissions = visibilityConfig.getRequiredPermissions();
         if (visibleToPermissions.isEmpty() || callerAttributionSource == null) {
             // Provider doesn't set any permissions or there is no caller attribution source,
             // default is not accessible to anyone.
@@ -217,70 +293,53 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
         return false;
     }
 
-    /** Returns true if the caller holds all required permission in the given set. */
+    /** Returns true if the caller holds all required permissions in the given set. */
     private boolean doesCallerHoldsAllRequiredPermissions(
             @NonNull Set<Integer> allRequiredPermissions,
             @NonNull AppSearchAttributionSource callerAttributionSource,
             boolean checkEnterpriseAccess) {
-        // TODO(b/319310107): change the handling for enterprise permissions; currently, we ignore
-        //  enterprise permissions for non-enterprise calls, but this doesn't match how required
-        //  permissions are intended to work
-        // If the caller requires enterprise access, the caller must pass both enterprise
-        // permission and Android permission checks.
-        if (checkEnterpriseAccess) {
-            // If ENTERPRISE_ACCESS is not in the set of required permissions, the given schema is
-            // not visible to enterprise sessions. ENTERPRISE_ACCESS permission does not limit a
-            // schema to only enterprise access however.
-            if (!allRequiredPermissions.contains(SetSchemaRequest.ENTERPRISE_ACCESS)) {
-                return false;
-            }
-            // Enterprise access to contacts requires the caller to have either managed profile
-            // caller id or contacts search access.
-            // TODO(b/319308885): write a test to verify we're handling this permission correctly
-            if (allRequiredPermissions.contains(SetSchemaRequest.ENTERPRISE_CONTACTS_DEVICE_POLICY)
-                    && !allowedByEnterpriseContactsDevicePolicy(
-                    callerAttributionSource.getPackageName())) {
-                return false;
-            }
+        // A permissions set with ENTERPRISE_ACCESS should only be checked by enterprise calls,
+        // and enterprise calls should only check permission sets with ENTERPRISE_ACCESS
+        boolean isEnterprisePermissionsSet = allRequiredPermissions.contains(
+                SetSchemaRequest.ENTERPRISE_ACCESS);
+        if (checkEnterpriseAccess != isEnterprisePermissionsSet) {
+            return false;
         }
-
+        String callingPackageName;
         for (int requiredPermission : allRequiredPermissions) {
-            String permission;
             switch (requiredPermission) {
                 case SetSchemaRequest.READ_SMS:
-                    permission = READ_SMS;
-                    break;
                 case SetSchemaRequest.READ_CALENDAR:
-                    permission = READ_CALENDAR;
-                    break;
                 case SetSchemaRequest.READ_CONTACTS:
-                    permission = READ_CONTACTS;
-                    break;
                 case SetSchemaRequest.READ_EXTERNAL_STORAGE:
-                    permission = READ_EXTERNAL_STORAGE;
-                    break;
                 case SetSchemaRequest.READ_HOME_APP_SEARCH_DATA:
-                    permission = READ_HOME_APP_SEARCH_DATA;
-                    break;
                 case SetSchemaRequest.READ_ASSISTANT_APP_SEARCH_DATA:
-                    permission = READ_ASSISTANT_APP_SEARCH_DATA;
+                    if (!doesCallerHavePermissionForDataDelivery(requiredPermission,
+                            callerAttributionSource)) {
+                        // The calling package doesn't have this required permission, return false.
+                        return false;
+                    }
+                    break;
+                case SetSchemaRequest.MANAGED_PROFILE_CONTACTS_ACCESS:
+                    // The managed profile access check should only be done from enterprise
+                    if (!checkEnterpriseAccess) {
+                        return false;
+                    }
+                    callingPackageName = callerAttributionSource.getPackageName();
+                    if (callingPackageName == null
+                            || !mPolicyChecker.doesCallerHaveManagedProfileContactsAccess(
+                            callingPackageName)) {
+                        return false;
+                    }
                     break;
                 case SetSchemaRequest.ENTERPRISE_ACCESS:
-                case SetSchemaRequest.ENTERPRISE_CONTACTS_DEVICE_POLICY:
-                    // These enterprise permissions don't correspond to Android permissions
-                    continue;
+                    // This permission is not an actual permission; it marks the permission set as
+                    // enterprise and is checked at the top of this method so just skip it here
+                    break;
                 default:
                     throw new UnsupportedOperationException(
                             "The required permission is unsupported in AppSearch : "
                                     + requiredPermission);
-            }
-            // getAttributionSource can be safely called and the returned value will only be
-            // null on Android R-
-            if (PERMISSION_GRANTED != mPermissionManager.checkPermissionForDataDelivery(
-                    permission, callerAttributionSource.getAttributionSource(),
-                    /*message=*/"appsearch")) {
-                // The calling package doesn't have this required permission, return false.
-                return false;
             }
         }
         // The calling package has all required permissions in this set, return true.
@@ -288,25 +347,40 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
     }
 
     /**
-     * Checks whether or not the calling package has caller id or contacts access to the work
-     * profile. This check is only done for enterprise access and therefore always runs in the work
-     * profile's AppSearch/VisibilityChecker instance.
-     *
-     * <p>Note, this method uses api's only supported on U+ and therefore returns false on devices
-     * below U.
+     * Checks whether the calling package has the corresponding Android permission to the specified
+     * {@code requiredPermission}.
      */
-    private boolean allowedByEnterpriseContactsDevicePolicy(String callingPackageName) {
-        // This is the same check CP2 makes to determine whether or not a user has access to
-        // enterprise contacts. Accessible fields are restricted to match the allowed fields for
-        // caller id access which is more limited than contacts access.
-        // https://cs.android.com/android/platform/superproject/main/+/main:packages/providers/ContactsProvider/src/com/android/providers/contacts/enterprise/EnterprisePolicyGuard.java;l=121;drc=242bb9f25b210fbfe36a384088221b54b2602b34
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // These api's are only supported on U+
-            return mDpm.hasManagedProfileCallerIdAccess(mUserContext.getUser(), callingPackageName)
-                    || mDpm.hasManagedProfileContactsAccess(mUserContext.getUser(),
-                    callingPackageName);
+    private boolean doesCallerHavePermissionForDataDelivery(
+            @SetSchemaRequest.AppSearchSupportedPermission int requiredPermission,
+            @NonNull AppSearchAttributionSource callerAttributionSource) {
+        String permission;
+        switch (requiredPermission) {
+            case SetSchemaRequest.READ_SMS:
+                permission = READ_SMS;
+                break;
+            case SetSchemaRequest.READ_CALENDAR:
+                permission = READ_CALENDAR;
+                break;
+            case SetSchemaRequest.READ_CONTACTS:
+                permission = READ_CONTACTS;
+                break;
+            case SetSchemaRequest.READ_EXTERNAL_STORAGE:
+                permission = READ_EXTERNAL_STORAGE;
+                break;
+            case SetSchemaRequest.READ_HOME_APP_SEARCH_DATA:
+                permission = READ_HOME_APP_SEARCH_DATA;
+                break;
+            case SetSchemaRequest.READ_ASSISTANT_APP_SEARCH_DATA:
+                permission = READ_ASSISTANT_APP_SEARCH_DATA;
+                break;
+            default:
+                return false;
         }
-        return false;
+        // getAttributionSource can be safely called and the returned value will only be
+        // null on Android R-
+        return PERMISSION_GRANTED == mPermissionManager.checkPermissionForDataDelivery(
+                permission, callerAttributionSource.getAttributionSource(),
+                /*message=*/"appsearch");
     }
 
     /**
@@ -314,6 +388,7 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
      *
      * @param callerPackageName Package name of the caller.
      */
+    @Override
     public boolean doesCallerHaveSystemAccess(@NonNull String callerPackageName) {
         Objects.requireNonNull(callerPackageName);
         return mUserContext.getPackageManager()

@@ -1,4 +1,5 @@
 package: "com.android.appsearch.flags"
+container: "com.android.appsearch"
 
 #
 # all the flags we are adding in V have to be is_fixed_read_only true.
@@ -48,7 +49,7 @@ flag {
     name: "enable_set_publicly_visible_schema"
     namespace: "appsearch"
     description: "Enable setPubliclyVisibleSchema API in SetSchemaRequest."
-    bug: "275592563"
+    bug: "325262525"
     is_fixed_read_only: true
 }
 
@@ -73,5 +74,21 @@ flag {
     namespace: "appsearch"
     description: "Enable the setSearchSourceLogTag API in SearchSpec."
     bug: "315370764"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "enable_enterprise_global_search_session"
+    namespace: "appsearch"
+    description: "Enable personal profile to search over allowed enterprise profile data in AppSearch through enterprise global search session."
+    bug: "237388235"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "enable_set_schema_visible_to_configs"
+    namespace: "appsearch"
+    description: "Enable the addSchemaTypeVisibleToConfig API in the setSchemaRequest."
+    bug: "300162279"
     is_fixed_read_only: true
 }

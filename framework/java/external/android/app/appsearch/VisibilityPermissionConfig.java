@@ -29,7 +29,7 @@ import java.util.Set;
 
 /**
  * The config class that holds all required permissions for a caller need to hold to access the
- * schema which the outer {@link VisibilityConfig} represents.
+ * schema which the outer {@link SchemaVisibilityConfig} represents.
  *
  * @hide
  */
@@ -45,12 +45,13 @@ public final class VisibilityPermissionConfig extends AbstractSafeParcelable {
     public static final String SCHEMA_TYPE = "VisibilityPermissionType";
 
     /** Property that holds the required permissions to access the schema. */
-    static final String ALL_REQUIRED_PERMISSIONS_PROPERTY = "allRequiredPermissions";
+    public static final String ALL_REQUIRED_PERMISSIONS_PROPERTY = "allRequiredPermissions";
 
     /**
      * Schema for the VisibilityStore's documents.
      *
-     * <p>NOTE: If you update this, also update {@link VisibilityConfig#SCHEMA_VERSION_LATEST}.
+     * <p>NOTE: If you update this, also update schema version number in
+     * VisibilityToDocumentConverter
      */
     public static final AppSearchSchema SCHEMA =
             new AppSearchSchema.Builder(SCHEMA_TYPE)
@@ -81,8 +82,16 @@ public final class VisibilityPermissionConfig extends AbstractSafeParcelable {
     }
 
     /**
+     * Sets a set of Android Permissions that caller must hold to access the schema that the outer
+     * {@link SchemaVisibilityConfig} represents.
+     */
+    public VisibilityPermissionConfig(@NonNull Set<Integer> allRequiredPermissions) {
+        mAllRequiredPermissions = toInts(Objects.requireNonNull(allRequiredPermissions));
+    }
+
+    /**
      * Returns an array of Android Permissions that caller mush hold to access the schema that the
-     * outer {@link VisibilityConfig} represents.
+     * outer {@link SchemaVisibilityConfig} represents.
      */
     @Nullable
     public Set<Integer> getAllRequiredPermissions() {
@@ -134,6 +143,11 @@ public final class VisibilityPermissionConfig extends AbstractSafeParcelable {
                 builder.setPropertyLong(ALL_REQUIRED_PERMISSIONS_PROPERTY, longs);
             }
 
+            // The creationTimestamp doesn't matter for Visibility documents.
+            // But to make tests pass, we set it 0 so two GenericDocuments generated from
+            // the same VisibilityPermissionConfig can be same.
+            builder.setCreationTimestampMillis(0L);
+
             mGenericDocument = builder.build();
         }
         return mGenericDocument;
@@ -164,42 +178,5 @@ public final class VisibilityPermissionConfig extends AbstractSafeParcelable {
     @Override
     public void writeToParcel(@NonNull Parcel dest, int flags) {
         VisibilityPermissionConfigCreator.writeToParcel(this, dest, flags);
-    }
-
-    /** Builder for {@link VisibilityPermissionConfig}. */
-    public static final class Builder {
-        private int[] mAllRequiredPermissions;
-
-        /**
-         * Constructs a {@link VisibilityPermissionConfig} from a {@link GenericDocument}.
-         *
-         * <p>This constructor is still needed until we don't treat Visibility related documents as
-         * {@link GenericDocument}s internally.
-         */
-        public Builder(@NonNull GenericDocument genericDocument) {
-            Objects.requireNonNull(genericDocument);
-            // GenericDocument only supports long[], so we need to convert it back to int[].
-            long[] longs = genericDocument.getPropertyLongArray(ALL_REQUIRED_PERMISSIONS_PROPERTY);
-            if (longs != null) {
-                mAllRequiredPermissions = new int[longs.length];
-                for (int i = 0; i < longs.length; ++i) {
-                    mAllRequiredPermissions[i] = (int) longs[i];
-                }
-            }
-        }
-
-        /**
-         * Sets a set of Android Permissions that caller mush hold to access the schema that the
-         * outer {@link VisibilityConfig} represents.
-         */
-        public Builder(@NonNull Set<Integer> allRequiredPermissions) {
-            mAllRequiredPermissions = toInts(Objects.requireNonNull(allRequiredPermissions));
-        }
-
-        /** Builds a {@link VisibilityPermissionConfig} */
-        @NonNull
-        public VisibilityPermissionConfig build() {
-            return new VisibilityPermissionConfig(mAllRequiredPermissions);
-        }
     }
 }
