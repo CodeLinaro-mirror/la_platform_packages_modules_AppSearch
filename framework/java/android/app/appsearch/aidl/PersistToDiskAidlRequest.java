@@ -16,11 +16,13 @@
 
 package android.app.appsearch.aidl;
 
+import android.annotation.ElapsedRealtimeLong;
 import android.annotation.NonNull;
 import android.app.appsearch.AppSearchSession;
 import android.app.appsearch.safeparcel.AbstractSafeParcelable;
 import android.app.appsearch.safeparcel.SafeParcelable;
 import android.os.Parcel;
+import android.os.Parcelable;
 import android.os.UserHandle;
 
 import java.util.Objects;
@@ -32,7 +34,7 @@ import java.util.Objects;
 @SafeParcelable.Class(creator = "PersistToDiskAidlRequestCreator")
 public class PersistToDiskAidlRequest extends AbstractSafeParcelable {
     @NonNull
-    public static final PersistToDiskAidlRequestCreator CREATOR =
+    public static final Parcelable.Creator<PersistToDiskAidlRequest> CREATOR =
             new PersistToDiskAidlRequestCreator();
 
     @NonNull
@@ -41,6 +43,7 @@ public class PersistToDiskAidlRequest extends AbstractSafeParcelable {
     @NonNull
     @Field(id = 2, getter = "getUserHandle")
     private final UserHandle mUserHandle;
+    @ElapsedRealtimeLong
     @Field(id = 3, getter = "getBinderCallStartTimeMillis")
     private final long mBinderCallStartTimeMillis;
 
@@ -55,7 +58,7 @@ public class PersistToDiskAidlRequest extends AbstractSafeParcelable {
     public PersistToDiskAidlRequest(
             @Param(id = 1) @NonNull AppSearchAttributionSource callerAttributionSource,
             @Param(id = 2) @NonNull UserHandle userHandle,
-            @Param(id = 3) @NonNull long binderCallStartTimeMillis) {
+            @Param(id = 3) @ElapsedRealtimeLong long binderCallStartTimeMillis) {
         mCallerAttributionSource = Objects.requireNonNull(callerAttributionSource);
         mUserHandle = Objects.requireNonNull(userHandle);
         mBinderCallStartTimeMillis = binderCallStartTimeMillis;
@@ -71,6 +74,7 @@ public class PersistToDiskAidlRequest extends AbstractSafeParcelable {
         return mUserHandle;
     }
 
+    @ElapsedRealtimeLong
     public long getBinderCallStartTimeMillis() {
         return mBinderCallStartTimeMillis;
     }
