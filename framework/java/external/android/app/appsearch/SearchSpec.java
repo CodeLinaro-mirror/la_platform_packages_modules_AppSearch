@@ -135,6 +135,7 @@ public final class SearchSpec extends AbstractSafeParcelable {
     private final List<String> mEnabledFeatures;
 
     @Field(id = 19, getter = "getSearchSourceLogTag")
+    @Nullable
     private final String mSearchSourceLogTag;
 
     /** @hide */
@@ -166,6 +167,7 @@ public final class SearchSpec extends AbstractSafeParcelable {
      * "football".
      */
     public static final int TERM_MATCH_EXACT_ONLY = 1;
+
     /**
      * Query terms will match indexed tokens when the query term is a prefix of the token.
      *
@@ -200,20 +202,28 @@ public final class SearchSpec extends AbstractSafeParcelable {
 
     /** No Ranking, results are returned in arbitrary order. */
     public static final int RANKING_STRATEGY_NONE = 0;
+
     /** Ranked by app-provided document scores. */
     public static final int RANKING_STRATEGY_DOCUMENT_SCORE = 1;
+
     /** Ranked by document creation timestamps. */
     public static final int RANKING_STRATEGY_CREATION_TIMESTAMP = 2;
+
     /** Ranked by document relevance score. */
     public static final int RANKING_STRATEGY_RELEVANCE_SCORE = 3;
+
     /** Ranked by number of usages, as reported by the app. */
     public static final int RANKING_STRATEGY_USAGE_COUNT = 4;
+
     /** Ranked by timestamp of last usage, as reported by the app. */
     public static final int RANKING_STRATEGY_USAGE_LAST_USED_TIMESTAMP = 5;
+
     /** Ranked by number of usages from a system UI surface. */
     public static final int RANKING_STRATEGY_SYSTEM_USAGE_COUNT = 6;
+
     /** Ranked by timestamp of last usage from a system UI surface. */
     public static final int RANKING_STRATEGY_SYSTEM_USAGE_LAST_USED_TIMESTAMP = 7;
+
     /**
      * Ranked by the aggregated ranking signal of the joined documents.
      *
@@ -224,6 +234,7 @@ public final class SearchSpec extends AbstractSafeParcelable {
      * @see Builder#build
      */
     public static final int RANKING_STRATEGY_JOIN_AGGREGATE_SCORE = 8;
+
     /** Ranked by the advanced ranking expression provided. */
     public static final int RANKING_STRATEGY_ADVANCED_RANKING_EXPRESSION = 9;
 
@@ -241,6 +252,7 @@ public final class SearchSpec extends AbstractSafeParcelable {
 
     /** Search results will be returned in a descending order. */
     public static final int ORDER_DESCENDING = 0;
+
     /** Search results will be returned in an ascending order. */
     public static final int ORDER_ASCENDING = 1;
 
@@ -258,16 +270,19 @@ public final class SearchSpec extends AbstractSafeParcelable {
             })
     @Retention(RetentionPolicy.SOURCE)
     public @interface GroupingType {}
+
     /**
      * Results should be grouped together by package for the purpose of enforcing a limit on the
      * number of results returned per package.
      */
     public static final int GROUPING_TYPE_PER_PACKAGE = 1 << 0;
+
     /**
      * Results should be grouped together by namespace for the purpose of enforcing a limit on the
      * number of results returned per namespace.
      */
     public static final int GROUPING_TYPE_PER_NAMESPACE = 1 << 1;
+
     /**
      * Results should be grouped together by schema type for the purpose of enforcing a limit on the
      * number of results returned per schema type.
@@ -459,11 +474,14 @@ public final class SearchSpec extends AbstractSafeParcelable {
         for (String schema : schemas) {
             ArrayList<String> propertyPathList =
                     mProjectionTypePropertyMasks.getStringArrayList(schema);
-            List<PropertyPath> copy = new ArrayList<>(propertyPathList.size());
-            for (String p : propertyPathList) {
-                copy.add(new PropertyPath(p));
+            if (propertyPathList != null) {
+                List<PropertyPath> copy = new ArrayList<>(propertyPathList.size());
+                for (int i = 0; i < propertyPathList.size(); i++) {
+                    String p = propertyPathList.get(i);
+                    copy.add(new PropertyPath(p));
+                }
+                typePropertyPathsMap.put(schema, copy);
             }
-            typePropertyPathsMap.put(schema, copy);
         }
         return typePropertyPathsMap;
     }
@@ -484,12 +502,15 @@ public final class SearchSpec extends AbstractSafeParcelable {
                 new ArrayMap<>(schemaTypes.size());
         for (String schemaType : schemaTypes) {
             Bundle propertyPathBundle = mTypePropertyWeightsField.getBundle(schemaType);
-            Set<String> propertyPaths = propertyPathBundle.keySet();
-            Map<String, Double> propertyPathWeights = new ArrayMap<>(propertyPaths.size());
-            for (String propertyPath : propertyPaths) {
-                propertyPathWeights.put(propertyPath, propertyPathBundle.getDouble(propertyPath));
+            if (propertyPathBundle != null) {
+                Set<String> propertyPaths = propertyPathBundle.keySet();
+                Map<String, Double> propertyPathWeights = new ArrayMap<>(propertyPaths.size());
+                for (String propertyPath : propertyPaths) {
+                    propertyPathWeights.put(
+                            propertyPath, propertyPathBundle.getDouble(propertyPath));
+                }
+                typePropertyWeightsMap.put(schemaType, propertyPathWeights);
             }
-            typePropertyWeightsMap.put(schemaType, propertyPathWeights);
         }
         return typePropertyWeightsMap;
     }
@@ -510,13 +531,17 @@ public final class SearchSpec extends AbstractSafeParcelable {
                 new ArrayMap<>(schemaTypes.size());
         for (String schemaType : schemaTypes) {
             Bundle propertyPathBundle = mTypePropertyWeightsField.getBundle(schemaType);
-            Set<String> propertyPaths = propertyPathBundle.keySet();
-            Map<PropertyPath, Double> propertyPathWeights = new ArrayMap<>(propertyPaths.size());
-            for (String propertyPath : propertyPaths) {
-                propertyPathWeights.put(
-                        new PropertyPath(propertyPath), propertyPathBundle.getDouble(propertyPath));
+            if (propertyPathBundle != null) {
+                Set<String> propertyPaths = propertyPathBundle.keySet();
+                Map<PropertyPath, Double> propertyPathWeights =
+                        new ArrayMap<>(propertyPaths.size());
+                for (String propertyPath : propertyPaths) {
+                    propertyPathWeights.put(
+                            new PropertyPath(propertyPath),
+                            propertyPathBundle.getDouble(propertyPath));
+                }
+                typePropertyWeightsMap.put(schemaType, propertyPathWeights);
             }
-            typePropertyWeightsMap.put(schemaType, propertyPathWeights);
         }
         return typePropertyWeightsMap;
     }
@@ -632,7 +657,7 @@ public final class SearchSpec extends AbstractSafeParcelable {
         @Order private int mOrder = ORDER_DESCENDING;
         @GroupingType private int mGroupingTypeFlags = 0;
         private int mGroupingLimit = 0;
-        private JoinSpec mJoinSpec;
+        @Nullable private JoinSpec mJoinSpec;
         private String mAdvancedRankingExpression = "";
         @Nullable private String mSearchSourceLogTag;
         private boolean mBuilt = false;
@@ -739,6 +764,7 @@ public final class SearchSpec extends AbstractSafeParcelable {
          * @param propertyPaths The String version of {@link PropertyPath}. A dot-delimited sequence
          *     of property names.
          */
+        @CanIgnoreReturnValue
         @NonNull
         @FlaggedApi(Flags.FLAG_ENABLE_SEARCH_SPEC_FILTER_PROPERTIES)
         public Builder addFilterProperties(

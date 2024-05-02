@@ -57,18 +57,23 @@ public final class PropertyConfigParcel extends AbstractSafeParcelable {
     private final int mCardinality;
 
     @Field(id = 4, getter = "getSchemaType")
+    @Nullable
     private final String mSchemaType;
 
     @Field(id = 5, getter = "getStringIndexingConfigParcel")
+    @Nullable
     private final StringIndexingConfigParcel mStringIndexingConfigParcel;
 
     @Field(id = 6, getter = "getDocumentIndexingConfigParcel")
+    @Nullable
     private final DocumentIndexingConfigParcel mDocumentIndexingConfigParcel;
 
     @Field(id = 7, getter = "getIntegerIndexingConfigParcel")
+    @Nullable
     private final IntegerIndexingConfigParcel mIntegerIndexingConfigParcel;
 
     @Field(id = 8, getter = "getJoinableConfigParcel")
+    @Nullable
     private final JoinableConfigParcel mJoinableConfigParcel;
 
     @Field(id = 9, getter = "getDescription")
@@ -111,10 +116,10 @@ public final class PropertyConfigParcel extends AbstractSafeParcelable {
                 Objects.requireNonNull(propertyName),
                 AppSearchSchema.PropertyConfig.DATA_TYPE_STRING,
                 cardinality,
-                /*schemaType=*/ null,
+                /* schemaType= */ null,
                 Objects.requireNonNull(stringIndexingConfigParcel),
-                /*documentIndexingConfigParcel=*/ null,
-                /*integerIndexingConfigParcel=*/ null,
+                /* documentIndexingConfigParcel= */ null,
+                /* integerIndexingConfigParcel= */ null,
                 Objects.requireNonNull(joinableConfigParcel),
                 Objects.requireNonNull(description));
     }
@@ -130,11 +135,11 @@ public final class PropertyConfigParcel extends AbstractSafeParcelable {
                 Objects.requireNonNull(propertyName),
                 AppSearchSchema.PropertyConfig.DATA_TYPE_LONG,
                 cardinality,
-                /*schemaType=*/ null,
-                /*stringIndexingConfigParcel=*/ null,
-                /*documentIndexingConfigParcel=*/ null,
+                /* schemaType= */ null,
+                /* stringIndexingConfigParcel= */ null,
+                /* documentIndexingConfigParcel= */ null,
                 new IntegerIndexingConfigParcel(indexingType),
-                /*joinableConfigParcel=*/ null,
+                /* joinableConfigParcel= */ null,
                 Objects.requireNonNull(description));
     }
 
@@ -148,11 +153,11 @@ public final class PropertyConfigParcel extends AbstractSafeParcelable {
                 Objects.requireNonNull(propertyName),
                 AppSearchSchema.PropertyConfig.DATA_TYPE_DOUBLE,
                 cardinality,
-                /*schemaType=*/ null,
-                /*stringIndexingConfigParcel=*/ null,
-                /*documentIndexingConfigParcel=*/ null,
-                /*integerIndexingConfigParcel=*/ null,
-                /*joinableConfigParcel=*/ null,
+                /* schemaType= */ null,
+                /* stringIndexingConfigParcel= */ null,
+                /* documentIndexingConfigParcel= */ null,
+                /* integerIndexingConfigParcel= */ null,
+                /* joinableConfigParcel= */ null,
                 Objects.requireNonNull(description));
     }
 
@@ -166,11 +171,11 @@ public final class PropertyConfigParcel extends AbstractSafeParcelable {
                 Objects.requireNonNull(propertyName),
                 AppSearchSchema.PropertyConfig.DATA_TYPE_BOOLEAN,
                 cardinality,
-                /*schemaType=*/ null,
-                /*stringIndexingConfigParcel=*/ null,
-                /*documentIndexingConfigParcel=*/ null,
-                /*integerIndexingConfigParcel=*/ null,
-                /*joinableConfigParcel=*/ null,
+                /* schemaType= */ null,
+                /* stringIndexingConfigParcel= */ null,
+                /* documentIndexingConfigParcel= */ null,
+                /* integerIndexingConfigParcel= */ null,
+                /* joinableConfigParcel= */ null,
                 Objects.requireNonNull(description));
     }
 
@@ -184,11 +189,11 @@ public final class PropertyConfigParcel extends AbstractSafeParcelable {
                 Objects.requireNonNull(propertyName),
                 AppSearchSchema.PropertyConfig.DATA_TYPE_BYTES,
                 cardinality,
-                /*schemaType=*/ null,
-                /*stringIndexingConfigParcel=*/ null,
-                /*documentIndexingConfigParcel=*/ null,
-                /*integerIndexingConfigParcel=*/ null,
-                /*joinableConfigParcel=*/ null,
+                /* schemaType= */ null,
+                /* stringIndexingConfigParcel= */ null,
+                /* documentIndexingConfigParcel= */ null,
+                /* integerIndexingConfigParcel= */ null,
+                /* joinableConfigParcel= */ null,
                 Objects.requireNonNull(description));
     }
 
@@ -205,10 +210,10 @@ public final class PropertyConfigParcel extends AbstractSafeParcelable {
                 AppSearchSchema.PropertyConfig.DATA_TYPE_DOCUMENT,
                 cardinality,
                 Objects.requireNonNull(schemaType),
-                /*stringIndexingConfigParcel=*/ null,
+                /* stringIndexingConfigParcel= */ null,
                 Objects.requireNonNull(documentIndexingConfigParcel),
-                /*integerIndexingConfigParcel=*/ null,
-                /*joinableConfigParcel=*/ null,
+                /* integerIndexingConfigParcel= */ null,
+                /* joinableConfigParcel= */ null,
                 Objects.requireNonNull(description));
     }
 
@@ -474,7 +479,7 @@ public final class PropertyConfigParcel extends AbstractSafeParcelable {
     @SafeParcelable.Class(creator = "IntegerIndexingConfigParcelCreator")
     public static class IntegerIndexingConfigParcel extends AbstractSafeParcelable {
         @NonNull
-        public static final IntegerIndexingConfigParcelCreator CREATOR =
+        public static final Parcelable.Creator<IntegerIndexingConfigParcel> CREATOR =
                 new IntegerIndexingConfigParcelCreator();
 
         @AppSearchSchema.LongPropertyConfig.IndexingType
@@ -527,7 +532,7 @@ public final class PropertyConfigParcel extends AbstractSafeParcelable {
     @SafeParcelable.Class(creator = "DocumentIndexingConfigParcelCreator")
     public static class DocumentIndexingConfigParcel extends AbstractSafeParcelable {
         @NonNull
-        public static final DocumentIndexingConfigParcelCreator CREATOR =
+        public static final Parcelable.Creator<DocumentIndexingConfigParcel> CREATOR =
                 new DocumentIndexingConfigParcelCreator();
 
         @Field(id = 1, getter = "shouldIndexNestedProperties")

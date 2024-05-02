@@ -16,6 +16,8 @@
 package com.android.server.appsearch;
 
 import static android.Manifest.permission.READ_GLOBAL_APP_SEARCH_DATA;
+import static android.app.appsearch.AppSearchResult.RESULT_DENIED;
+import static android.app.appsearch.AppSearchResult.RESULT_RATE_LIMITED;
 import static android.system.OsConstants.O_RDONLY;
 import static android.system.OsConstants.O_WRONLY;
 
@@ -45,6 +47,7 @@ import android.Manifest;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.UiAutomation;
+import android.app.admin.DevicePolicyManager;
 import android.app.appsearch.AppSearchBatchResult;
 import android.app.appsearch.AppSearchEnvironmentFactory;
 import android.app.appsearch.AppSearchResult;
@@ -102,7 +105,6 @@ import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
@@ -112,6 +114,7 @@ import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.provider.DeviceConfig;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -155,16 +158,11 @@ public class AppSearchManagerServiceTest {
     private static final SearchSpec EMPTY_SEARCH_SPEC = new SearchSpec.Builder().build();
     // Mostly guarantees the logged estimated binder latency is positive and doesn't overflow
     private static final long BINDER_CALL_START_TIME = SystemClock.elapsedRealtime() - 1;
-    // TODO(b/279047435): use actual AppSearchResult.RESULT_DENIED constant after it's unhidden
-    private static final int RESULT_DENIED = 9;
-
-    // TODO(b/279047435): use actual AppSearchResult.RESULT_RATE_LIMITED constant after it's
-    //  unhidden
-    private static final int RESULT_RATE_LIMITED = 10;
     private static final String FOO_PACKAGE_NAME = "foo";
 
     private final MockServiceManager mMockServiceManager = new MockServiceManager();
     private final RoleManager mRoleManager = mock(RoleManager.class);
+    private final DevicePolicyManager mDevicePolicyManager = mock(DevicePolicyManager.class);
 
     @Rule
     public ExtendedMockitoRule mExtendedMockitoRule = new ExtendedMockitoRule.Builder()
@@ -191,6 +189,7 @@ public class AppSearchManagerServiceTest {
         mContext = new ContextWrapper(context) {
             // Mock-able package manager for testing
             final PackageManager mPackageManager = spy(context.getPackageManager());
+            final UserManager mUserManager = spy(context.getSystemService(UserManager.class));
 
             @Override
             public Intent registerReceiverForAllUsers(@Nullable BroadcastReceiver receiver,
@@ -220,6 +219,12 @@ public class AppSearchManagerServiceTest {
             public Object getSystemService(String name) {
                 if (Context.ROLE_SERVICE.equals(name)) {
                     return mRoleManager;
+                }
+                if (Context.DEVICE_POLICY_SERVICE.equals(name)) {
+                    return mDevicePolicyManager;
+                }
+                if (Context.USER_SERVICE.equals(name)) {
+                    return mUserManager;
                 }
                 return super.getSystemService(name);
             }
@@ -930,19 +935,19 @@ public class AppSearchManagerServiceTest {
 
         verifySetSchemaResult(RESULT_RATE_LIMITED);
         verifyLocalGetSchemaResult(RESULT_RATE_LIMITED);
-        verifySearchResult(AppSearchResult.RESULT_RATE_LIMITED);
-        verifyPutDocumentsResult(AppSearchResult.RESULT_RATE_LIMITED);
-        verifyLocalGetDocumentsResult(AppSearchResult.RESULT_RATE_LIMITED);
-        verifyLocalGetNextPageResult(AppSearchResult.RESULT_RATE_LIMITED);
-        verifyGlobalGetDocumentsResult(AppSearchResult.RESULT_RATE_LIMITED);
-        verifyGlobalSearchResult(AppSearchResult.RESULT_RATE_LIMITED);
-        verifyGlobalGetNextPageResult(AppSearchResult.RESULT_RATE_LIMITED);
-        verifyInvalidateNextPageTokenResult(AppSearchResult.RESULT_RATE_LIMITED);
-        verifyGlobalReportUsageResult(AppSearchResult.RESULT_RATE_LIMITED);
-        verifyPersistToDiskResult(AppSearchResult.RESULT_RATE_LIMITED);
-        verifyExecuteAppFunctionCallbackResult(AppSearchResult.RESULT_RATE_LIMITED);
+        verifySearchResult(RESULT_RATE_LIMITED);
+        verifyPutDocumentsResult(RESULT_RATE_LIMITED);
+        verifyLocalGetDocumentsResult(RESULT_RATE_LIMITED);
+        verifyLocalGetNextPageResult(RESULT_RATE_LIMITED);
+        verifyGlobalGetDocumentsResult(RESULT_RATE_LIMITED);
+        verifyGlobalSearchResult(RESULT_RATE_LIMITED);
+        verifyGlobalGetNextPageResult(RESULT_RATE_LIMITED);
+        verifyInvalidateNextPageTokenResult(RESULT_RATE_LIMITED);
+        verifyGlobalReportUsageResult(RESULT_RATE_LIMITED);
+        verifyPersistToDiskResult(RESULT_RATE_LIMITED);
+        verifyExecuteAppFunctionCallbackResult(RESULT_RATE_LIMITED);
 
-        // initialize, registerObserver and unregisterObserver do not have rate liimt.
+        // initialize, registerObserver and unregisterObserver do not have rate limit.
     }
 
     @Test
@@ -1362,6 +1367,21 @@ public class AppSearchManagerServiceTest {
                 }));
 
         verifyExecuteAppFunctionCallbackResult(AppSearchResult.RESULT_INVALID_ARGUMENT);
+    }
+
+    @Test
+    public void executeAppFunction_hasDeviceOwner_fail() throws Exception {
+        doReturn(true).when(mDevicePolicyManager).isDeviceManaged();
+
+        verifyExecuteAppFunctionCallbackResult(AppSearchResult.RESULT_SECURITY_ERROR);
+    }
+
+    @Test
+    public void executeAppFunction_fromManagedProfile_fail() throws Exception {
+        UserManager spyUserManager = mContext.getSystemService(UserManager.class);
+        doReturn(true).when(spyUserManager).isManagedProfile(mUserHandle.getIdentifier());
+
+        verifyExecuteAppFunctionCallbackResult(AppSearchResult.RESULT_SECURITY_ERROR);
     }
 
     private void verifyLocalCallsResults(int resultCode) throws Exception {
@@ -1797,6 +1817,10 @@ public class AppSearchManagerServiceTest {
         resolveInfo.serviceInfo = serviceInfo;
         PackageManager spyPackageManager = mContext.getPackageManager();
         doReturn(resolveInfo).when(spyPackageManager).resolveService(any(Intent.class), eq(0));
+
+        doReturn(false).when(mDevicePolicyManager).isDeviceManaged();
+        UserManager spyUserManager = mContext.getSystemService(UserManager.class);
+        doReturn(false).when(spyUserManager).isManagedProfile(mUserHandle.getIdentifier());
     }
 
     private static class MockServiceManager implements StaticMockFixture {
@@ -1923,7 +1947,12 @@ public class AppSearchManagerServiceTest {
         public void executeAppFunction(
                 ExecuteAppFunctionRequest executeAppFunctionRequest,
                 IAppSearchResultCallback callback) throws RemoteException {
-            callback.onResult(new AppSearchResultParcel(mResult));
+            if (mResult.isSuccess()) {
+                callback.onResult(AppSearchResultParcel.fromExecuteAppFunctionResponse(
+                        mResult.getResultValue()));
+            } else {
+                callback.onResult(AppSearchResultParcel.fromFailedResult(mResult));
+            }
         }
     }
 }

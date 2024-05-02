@@ -65,10 +65,12 @@ public final class SearchSuggestionSpec extends AbstractSafeParcelable {
 
     @Field(id = 2, getter = "getFilterSchemas")
     private final List<String> mFilterSchemas;
+
     // Maps are not supported by SafeParcelable fields, using Bundle instead. Here the key is
     // schema type and value is a list of target property paths in that schema to search over.
     @Field(id = 3)
     final Bundle mFilterProperties;
+
     // Maps are not supported by SafeParcelable fields, using Bundle instead. Here the key is
     // namespace and value is a list of target document ids in that namespace to search over.
     @Field(id = 4)
@@ -127,6 +129,7 @@ public final class SearchSuggestionSpec extends AbstractSafeParcelable {
      * score and appear in the results first.
      */
     public static final int SUGGESTION_RANKING_STRATEGY_DOCUMENT_COUNT = 0;
+
     /**
      * Ranked by the term appear frequency.
      *
@@ -352,6 +355,7 @@ public final class SearchSuggestionSpec extends AbstractSafeParcelable {
          *     of property names indicating which property in the document these snippets correspond
          *     to.
          */
+        @CanIgnoreReturnValue
         @NonNull
         @FlaggedApi(Flags.FLAG_ENABLE_SEARCH_SPEC_FILTER_PROPERTIES)
         public Builder addFilterProperties(
