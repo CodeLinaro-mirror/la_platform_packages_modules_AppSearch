@@ -38,10 +38,9 @@ import java.util.Objects;
 /**
  * Compatibility version of AttributionSource.
  *
- * Refactor AttributionSource to work on older API levels. For Android S+, this class maintains the
- * original implementation of AttributionSource methods. However, for Android R-, this class
- * creates a new implementation.
- * Replace calls to AttributionSource with AppSearchAttributionSource.
+ * <p>Refactor AttributionSource to work on older API levels. For Android S+, this class maintains
+ * the original implementation of AttributionSource methods. However, for Android R-, this class
+ * creates a new implementation. Replace calls to AttributionSource with AppSearchAttributionSource.
  * For a given Context, replace calls to getAttributionSource with createAttributionSource.
  *
  * @hide
@@ -50,17 +49,18 @@ import java.util.Objects;
 public final class AppSearchAttributionSource extends AbstractSafeParcelable {
     @NonNull
     public static final Parcelable.Creator<AppSearchAttributionSource> CREATOR =
-        new AppSearchAttributionSourceCreator();
+            new AppSearchAttributionSourceCreator();
 
-    @NonNull
-    private final Compat mCompat;
+    @NonNull private final Compat mCompat;
 
     @Nullable
     @Field(id = 1, getter = "getAttributionSource")
     private final AttributionSource mAttributionSource;
-    @Nullable
+
+    @NonNull
     @Field(id = 2, getter = "getPackageName")
     private final String mCallingPackageName;
+
     @Field(id = 3, getter = "getUid")
     private final int mCallingUid;
 
@@ -79,11 +79,11 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
     @Constructor
     AppSearchAttributionSource(
             @Param(id = 1) @Nullable AttributionSource attributionSource,
-            @Param(id = 2) @Nullable String callingPackageName,
+            @Param(id = 2) @NonNull String callingPackageName,
             @Param(id = 3) int callingUid,
             @Param(id = 4) int callingPid) {
         mAttributionSource = attributionSource;
-        mCallingPackageName = callingPackageName;
+        mCallingPackageName = Objects.requireNonNull(callingPackageName);
         mCallingUid = callingUid;
         mCallingPid = callingPid;
         if (VERSION.SDK_INT >= Build.VERSION_CODES.S && mAttributionSource != null) {
@@ -105,8 +105,9 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
 
     /**
      * Constructs an instance of AppSearchAttributionSource.
-     * @param compat The compat version that provides AttributionSource implementation on
-     *      lower API levels.
+     *
+     * @param compat The compat version that provides AttributionSource implementation on lower API
+     *     levels.
      */
     private AppSearchAttributionSource(@NonNull Compat compat) {
         mCompat = Objects.requireNonNull(compat);
@@ -118,22 +119,22 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
 
     /**
      * Constructs an instance of AppSearchAttributionSource for testing.
+     *
      * @param callingPackageName The package that is accessing the permission protected data.
      * @param callingUid The UID that is accessing the permission protected data.
      */
     @VisibleForTesting
     public AppSearchAttributionSource(
-            @Nullable String callingPackageName, int callingUid, int callingPid) {
-        mCallingPackageName = callingPackageName;
+            @NonNull String callingPackageName, int callingUid, int callingPid) {
+        mCallingPackageName = Objects.requireNonNull(callingPackageName);
         mCallingUid = callingUid;
         mCallingPid = callingPid;
 
         if (VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // This constructor is only used in unit test, AttributionSource#setPid is only
             // available on 34+.
-            AttributionSource.Builder attributionSourceBuilder = new AttributionSource
-                    .Builder(mCallingUid)
-                    .setPackageName(mCallingPackageName);
+            AttributionSource.Builder attributionSourceBuilder =
+                    new AttributionSource.Builder(mCallingUid).setPackageName(mCallingPackageName);
             if (VERSION.SDK_INT >= VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 attributionSourceBuilder.setPid(callingPid);
             }
@@ -148,7 +149,7 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
     /**
      * Provides a backward-compatible wrapper for AttributionSource.
      *
-     * This method is not supported on devices running SDK <= 30(R) since the AttributionSource
+     * <p>This method is not supported on devices running SDK <= 30(R) since the AttributionSource
      * class will not be available.
      *
      * @param attributionSource AttributionSource class to wrap, must not be null
@@ -172,7 +173,7 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
      * @return wrapped class
      */
     private static AppSearchAttributionSource toAppSearchAttributionSource(
-            @Nullable String packageName, int uid, int pid) {
+            @NonNull String packageName, int uid, int pid) {
         return new AppSearchAttributionSource(new Api19Impl(packageName, uid, pid));
     }
 
@@ -190,15 +191,13 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
         return toAppSearchAttributionSource(context.getPackageName(), Process.myUid(), callingPid);
     }
 
-    /**
-     * Return AttributionSource on Android S+ and return null on Android R-.
-     */
+    /** Return AttributionSource on Android S+ and return null on Android R-. */
     @Nullable
     public AttributionSource getAttributionSource() {
         return mCompat.getAttributionSource();
     }
 
-    @Nullable
+    @NonNull
     public String getPackageName() {
         return mCompat.getPackageName();
     }
@@ -214,8 +213,8 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
     @Override
     public int hashCode() {
         if (VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            AttributionSource attributionSource = Objects.requireNonNull(
-                mCompat.getAttributionSource());
+            AttributionSource attributionSource =
+                    Objects.requireNonNull(mCompat.getAttributionSource());
             return attributionSource.hashCode();
         }
 
@@ -230,16 +229,17 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
 
         AppSearchAttributionSource that = (AppSearchAttributionSource) o;
         if (VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            AttributionSource thisAttributionSource = Objects.requireNonNull(
-                mCompat.getAttributionSource());
-            AttributionSource thatAttributionSource = Objects.requireNonNull(
-                that.getAttributionSource());
+            AttributionSource thisAttributionSource =
+                    Objects.requireNonNull(mCompat.getAttributionSource());
+            AttributionSource thatAttributionSource =
+                    Objects.requireNonNull(that.getAttributionSource());
             return thisAttributionSource.equals(thatAttributionSource)
                     && (that.getPid() == mCompat.getPid());
         }
 
         return (Objects.equals(mCompat.getPackageName(), that.getPackageName())
-            && (mCompat.getUid() == that.getUid()) && mCompat.getPid() == that.getPid());
+                && (mCompat.getUid() == that.getUid())
+                && mCompat.getPid() == that.getPid());
     }
 
     @Override
@@ -250,7 +250,7 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
     /** Compat class for AttributionSource to provide implementation for lower API levels. */
     private interface Compat {
         /** The package that is accessing the permission protected data. */
-        @Nullable
+        @NonNull
         String getPackageName();
 
         /** The attribution source of the app accessing the permission protected data. */
@@ -273,8 +273,8 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
         /**
          * Creates a new implementation for AppSearchAttributionSource's Compat for API levels 31+.
          *
-         * @param attributionSource The attribution source that is accessing permission
-         *      protected data.
+         * @param attributionSource The attribution source that is accessing permission protected
+         *     data.
          */
         Api31Impl(@NonNull AttributionSource attributionSource, int pid) {
             mAttributionSource = attributionSource;
@@ -282,9 +282,16 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
         }
 
         @Override
-        @Nullable
+        @NonNull
         public String getPackageName() {
-            return mAttributionSource.getPackageName();
+            // The {@link AttributionSource} in the constructor is set using
+            // {@link Context#getAttributionSource} and not using the Builder. The
+            // packageName returned from {@link AttributionSource#getPackageName} can be null as
+            // AttributionSource can use either uid and package name to determine who has access
+            // to the data, so either one of them can be null but not both. It is a common practice
+            // to use {@link AttributionSource#getPackageName} without any known issues/bugs. If
+            // we ever receive a null here we will throw a NullPointerException.
+            return Objects.requireNonNull(mAttributionSource.getPackageName());
         }
 
         @Nullable
@@ -306,7 +313,7 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
 
     private static class Api19Impl implements Compat {
 
-        @Nullable private final String mPackageName;
+        @NonNull private final String mPackageName;
         private final int mUid;
         private final int mPid;
 
@@ -316,14 +323,14 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
          * @param packageName The package name that is accessing permission protected data.
          * @param uid The uid that is accessing permission protected data.
          */
-        Api19Impl(@Nullable String packageName, int uid, int pid) {
-            mPackageName = packageName;
+        Api19Impl(@NonNull String packageName, int uid, int pid) {
+            mPackageName = Objects.requireNonNull(packageName);
             mUid = uid;
             mPid = pid;
         }
 
         @Override
-        @Nullable
+        @NonNull
         public String getPackageName() {
             return mPackageName;
         }
@@ -353,14 +360,14 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
          * the attribution source is one for the calling app to prevent the caller to pass you a
          * source from another app without including themselves in the attribution chain.
          *
-         * @throws SecurityException if the attribution source cannot be trusted to be from
-         *         the caller.
+         * @throws SecurityException if the attribution source cannot be trusted to be from the
+         *     caller.
          */
         private void enforceCallingUid() {
             if (!checkCallingUid()) {
                 int callingUid = Binder.getCallingUid();
                 throw new SecurityException(
-                    "Calling uid: " + callingUid + " doesn't match source uid: " + mUid);
+                        "Calling uid: " + callingUid + " doesn't match source uid: " + mUid);
             }
             // The verification for calling package happens in the service during API call.
         }
@@ -389,16 +396,18 @@ public final class AppSearchAttributionSource extends AbstractSafeParcelable {
          * this.
          *
          * @throws SecurityException if the attribution source cannot be trusted to be from the
-         * caller.
+         *     caller.
          */
         private void enforceCallingPid() {
             if (!checkCallingPid()) {
                 if (Binder.getCallingPid() == 0) {
-                    throw new SecurityException("Calling pid unavailable due to oneway Binder "
-                            + "call.");
+                    throw new SecurityException(
+                            "Calling pid unavailable due to oneway Binder " + "call.");
                 } else {
                     throw new SecurityException(
-                            "Calling pid: " + Binder.getCallingPid() + " doesn't match source pid: "
+                            "Calling pid: "
+                                    + Binder.getCallingPid()
+                                    + " doesn't match source pid: "
                                     + mPid);
                 }
             }

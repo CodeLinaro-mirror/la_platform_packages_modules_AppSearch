@@ -19,7 +19,8 @@ import android.annotation.NonNull;
 import android.app.appsearch.GlobalSearchSession;
 import android.app.appsearch.SearchResults;
 import android.app.appsearch.SearchSpec;
-import android.app.appsearch.exceptions.AppSearchException;
+
+import java.io.Closeable;
 
 /**
  * A synchronous wrapper around {@link GlobalSearchSession}. This allows us to call globalSearch
@@ -27,16 +28,23 @@ import android.app.appsearch.exceptions.AppSearchException;
  *
  * @see GlobalSearchSession
  */
-public interface SyncGlobalSearchSession {
+public interface SyncGlobalSearchSession extends Closeable {
     /**
      * Returns a synchronous version of {@link SearchResults}.
      *
-     * <p> While the underlying method is not asynchronous, this method allows for convenience while
+     * <p>While the underlying method is not asynchronous, this method allows for convenience while
      * synchronously searching globally.
      *
      * @see GlobalSearchSession#search
      */
     @NonNull
-    SyncSearchResults search(@NonNull String query, @NonNull SearchSpec searchSpec)
-            throws AppSearchException;
+    SyncSearchResults search(@NonNull String query, @NonNull SearchSpec searchSpec);
+
+    /**
+     * Closes the global session.
+     *
+     * @see GlobalSearchSession#close
+     */
+    @Override
+    void close();
 }
