@@ -42,6 +42,7 @@ import android.app.appsearch.AppSearchEnvironment;
 import android.app.appsearch.AppSearchEnvironmentFactory;
 import android.app.appsearch.AppSearchMigrationHelper;
 import android.app.appsearch.AppSearchResult;
+import android.app.appsearch.ExceptionUtil;
 import android.app.appsearch.GenericDocument;
 import android.app.appsearch.GetSchemaResponse;
 import android.app.appsearch.InternalSetSchemaResponse;
@@ -123,7 +124,6 @@ import com.android.server.appsearch.transformer.EnterpriseSearchResultPageTransf
 import com.android.server.appsearch.transformer.EnterpriseSearchSpecTransformer;
 import com.android.server.appsearch.util.AdbDumpUtil;
 import com.android.server.appsearch.util.ApiCallRecord;
-import com.android.server.appsearch.util.ExceptionUtil;
 import com.android.server.appsearch.util.ExecutorManager;
 import com.android.server.appsearch.util.ServiceImplHelper;
 import com.android.server.appsearch.visibilitystore.FrameworkCallerAccess;
@@ -393,14 +393,18 @@ public class AppSearchManagerService extends SystemService {
 
     private void onUserStopping(@NonNull UserHandle userHandle) {
         Objects.requireNonNull(userHandle);
-        Log.i(TAG, "Shutting down AppSearch for user " + userHandle);
+        if (LogUtil.INFO) {
+            Log.i(TAG, "Shutting down AppSearch for user " + userHandle);
+        }
         try {
             mServiceImplHelper.setUserIsLocked(userHandle, true);
             mExecutorManager.shutDownAndRemoveUserExecutor(userHandle);
             mAppSearchUserInstanceManager.closeAndRemoveUserInstance(userHandle);
             AppSearchMaintenanceService.cancelFullyPersistJobIfScheduled(
                     mContext, userHandle.getIdentifier());
-            Log.i(TAG, "Removed AppSearchImpl instance for: " + userHandle);
+            if (LogUtil.INFO) {
+                Log.i(TAG, "Removed AppSearchImpl instance for: " + userHandle);
+            }
         } catch (InterruptedException | RuntimeException e) {
             Log.e(TAG, "Unable to remove data for: " + userHandle, e);
             ExceptionUtil.handleException(e);
@@ -429,8 +433,7 @@ public class AppSearchManagerService extends SystemService {
             long verifyIncomingCallLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -550,8 +553,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -644,8 +646,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -717,8 +718,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -857,8 +857,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1002,8 +1001,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1077,8 +1075,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1170,8 +1167,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1275,8 +1271,7 @@ public class AppSearchManagerService extends SystemService {
                     // Return if we tried to and couldn't get the enterprise user
                     return;
                 }
-                String callingPackageName = Objects.requireNonNull(
-                        request.getCallerAttributionSource().getPackageName());
+                String callingPackageName = request.getCallerAttributionSource().getPackageName();
                 if (checkCallDenied(callingPackageName, /* callingDatabaseName= */ null,
                         CallStats.CALL_TYPE_INVALIDATE_NEXT_PAGE_TOKEN, targetUser,
                         request.getBinderCallStartTimeMillis(), totalLatencyStartTimeMillis,
@@ -1347,8 +1342,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1437,8 +1431,7 @@ public class AppSearchManagerService extends SystemService {
             long callStatsTotalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1569,8 +1562,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1647,8 +1639,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1744,8 +1735,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1846,8 +1836,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1930,8 +1919,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -1999,8 +1987,7 @@ public class AppSearchManagerService extends SystemService {
             try {
                 UserHandle targetUser = mServiceImplHelper.verifyIncomingCall(
                         request.getCallerAttributionSource(), request.getUserHandle());
-                String callingPackageName = Objects.requireNonNull(
-                        request.getCallerAttributionSource().getPackageName());
+                String callingPackageName = request.getCallerAttributionSource().getPackageName();
                 if (checkCallDenied(callingPackageName, /* callingDatabaseName= */ null,
                         CallStats.CALL_TYPE_FLUSH, targetUser,
                         request.getBinderCallStartTimeMillis(), totalLatencyStartTimeMillis,
@@ -2079,8 +2066,7 @@ public class AppSearchManagerService extends SystemService {
             try {
                 UserHandle targetUser = mServiceImplHelper.verifyIncomingCall(
                         request.getCallerAttributionSource(), request.getUserHandle());
-                callingPackageName = Objects.requireNonNull(
-                        request.getCallerAttributionSource().getPackageName());
+                callingPackageName = request.getCallerAttributionSource().getPackageName();
                 if (checkCallDenied(callingPackageName, /* callingDatabaseName= */ null,
                         CallStats.CALL_TYPE_REGISTER_OBSERVER_CALLBACK, targetUser,
                         request.getBinderCallStartTimeMillis(), totalLatencyStartTimeMillis,
@@ -2164,8 +2150,7 @@ public class AppSearchManagerService extends SystemService {
             try {
                 UserHandle targetUser = mServiceImplHelper.verifyIncomingCall(
                         request.getCallerAttributionSource(), request.getUserHandle());
-                String callingPackageName = Objects.requireNonNull(
-                        request.getCallerAttributionSource().getPackageName());
+                String callingPackageName = request.getCallerAttributionSource().getPackageName();
                 if (checkCallDenied(callingPackageName, /* callingDatabaseName= */ null,
                         CallStats.CALL_TYPE_UNREGISTER_OBSERVER_CALLBACK, targetUser,
                         request.getBinderCallStartTimeMillis(), totalLatencyStartTimeMillis,
@@ -2224,8 +2209,7 @@ public class AppSearchManagerService extends SystemService {
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             if (targetUser == null) {
                 return;  // Verification failed; verifyIncomingCall triggered callback.
             }
@@ -2291,8 +2275,7 @@ public class AppSearchManagerService extends SystemService {
 
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
 
-            String callingPackageName =
-                    Objects.requireNonNull(request.getCallerAttributionSource().getPackageName());
+            String callingPackageName = request.getCallerAttributionSource().getPackageName();
             UserHandle targetUser = mServiceImplHelper.verifyIncomingCallWithCallback(
                     request.getCallerAttributionSource(), request.getUserHandle(), callback);
             if (targetUser == null) {
