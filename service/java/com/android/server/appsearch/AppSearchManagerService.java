@@ -45,16 +45,15 @@ import android.app.appsearch.AppSearchResult;
 import android.app.appsearch.GenericDocument;
 import android.app.appsearch.GetSchemaResponse;
 import android.app.appsearch.InternalSetSchemaResponse;
-import android.app.appsearch.aidl.AppSearchBatchResultParcel;
-import android.app.appsearch.aidl.ExecuteAppFunctionAidlRequest;
-import android.app.appsearch.functions.SafeOneTimeAppSearchResultCallback;
 import android.app.appsearch.SearchResultPage;
 import android.app.appsearch.SearchSpec;
 import android.app.appsearch.SearchSuggestionResult;
 import android.app.appsearch.SetSchemaResponse;
 import android.app.appsearch.SetSchemaResponse.MigrationFailure;
 import android.app.appsearch.StorageInfo;
+import android.app.appsearch.aidl.AppSearchBatchResultParcel;
 import android.app.appsearch.aidl.AppSearchResultParcel;
+import android.app.appsearch.aidl.ExecuteAppFunctionAidlRequest;
 import android.app.appsearch.aidl.GetDocumentsAidlRequest;
 import android.app.appsearch.aidl.GetNamespacesAidlRequest;
 import android.app.appsearch.aidl.GetNextPageAidlRequest;
@@ -83,6 +82,7 @@ import android.app.appsearch.aidl.WriteSearchResultsToFileAidlRequest;
 import android.app.appsearch.exceptions.AppSearchException;
 import android.app.appsearch.functions.AppFunctionService;
 import android.app.appsearch.functions.ExecuteAppFunctionRequest;
+import android.app.appsearch.functions.SafeOneTimeAppSearchResultCallback;
 import android.app.appsearch.functions.ServiceCallHelper;
 import android.app.appsearch.functions.ServiceCallHelper.ServiceUsageCompleteListener;
 import android.app.appsearch.functions.ServiceCallHelperImpl;
@@ -344,10 +344,13 @@ public class AppSearchManagerService extends SystemService {
         Objects.requireNonNull(user);
         UserHandle userHandle = user.getUserHandle();
         mServiceImplHelper.setUserIsLocked(userHandle, false);
-        mExecutorManager.getOrCreateUserExecutor(userHandle).execute(() -> {
-            try {
-                // Only clear the package's data if AppSearch exists for this user.
-                if (mAppSearchEnvironment.getAppSearchDir(mContext, userHandle).exists()) {
+
+        // Only schedule task if AppSearch exists for this user.
+        if (mAppSearchEnvironment.getAppSearchDir(mContext, userHandle).exists()) {
+            mExecutorManager.getOrCreateUserExecutor(userHandle).execute(() -> {
+                // Try to prune garbage package data, this is to recover if user remove a package
+                // and reboot the device before we prune the package data.
+                try {
                     Context userContext = mAppSearchEnvironment
                             .createContextAsUser(mContext, userHandle);
                     AppSearchUserInstance instance =
@@ -364,15 +367,22 @@ public class AppSearchManagerService extends SystemService {
                     }
                     packagesToKeep.add(VisibilityStore.VISIBILITY_PACKAGE_NAME);
                     instance.getAppSearchImpl().prunePackageData(packagesToKeep);
+                } catch (AppSearchException | RuntimeException e) {
+                    Log.e(TAG, "Unable to prune packages for " + user, e);
+                    ExceptionUtil.handleException(e);
+                }
+
+                // Try to schedule fully persist job.
+                try {
                     AppSearchMaintenanceService.scheduleFullyPersistJob(mContext,
                             userHandle.getIdentifier(),
                             mAppSearchConfig.getCachedFullyPersistJobIntervalMillis());
+                } catch (RuntimeException e) {
+                    Log.e(TAG, "Unable to schedule fully persist job for " + user, e);
+                    ExceptionUtil.handleException(e);
                 }
-            } catch (AppSearchException | RuntimeException e) {
-                Log.e(TAG, "Unable to prune packages for " + user, e);
-                ExceptionUtil.handleException(e);
-            }
-        });
+            });
+        }
     }
 
     @Override
