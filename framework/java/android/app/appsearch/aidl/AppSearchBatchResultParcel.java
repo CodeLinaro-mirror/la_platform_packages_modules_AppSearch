@@ -24,8 +24,10 @@ import android.app.appsearch.ParcelableUtil;
 import android.app.appsearch.safeparcel.AbstractSafeParcelable;
 import android.app.appsearch.safeparcel.GenericDocumentParcel;
 import android.app.appsearch.safeparcel.SafeParcelable;
+import android.app.appsearch.util.BundleUtil;
 import android.os.Bundle;
 import android.os.Parcel;
+import android.os.Parcelable;
 
 import java.util.Map;
 import java.util.Objects;
@@ -43,8 +45,10 @@ import java.util.Objects;
  */
 @SafeParcelable.Class(creator = "AppSearchBatchResultParcelCreator", creatorIsFinal = false)
 public final class AppSearchBatchResultParcel<ValueType> extends AbstractSafeParcelable {
+
     @NonNull
-    public static final AppSearchBatchResultParcelCreator CREATOR =
+    @SuppressWarnings("rawtypes")
+    public static final Parcelable.Creator<AppSearchBatchResultParcel> CREATOR =
             new AppSearchBatchResultParcelCreator() {
                 @Override
                 public AppSearchBatchResultParcel createFromParcel(Parcel in) {
@@ -59,7 +63,7 @@ public final class AppSearchBatchResultParcel<ValueType> extends AbstractSafePar
                             String key = Objects.requireNonNull(unmarshallParcel.readString());
                             AppSearchResultParcel appSearchResultParcel =
                                     AppSearchResultParcel.directlyReadFromParcel(unmarshallParcel);
-                            inputBundle.putParcelable(key, appSearchResultParcel);
+                            BundleUtil.putParcelable(appSearchResultParcel, inputBundle, key);
                         }
                         return new AppSearchBatchResultParcel(inputBundle);
                     } finally {
@@ -84,6 +88,7 @@ public final class AppSearchBatchResultParcel<ValueType> extends AbstractSafePar
      * Creates a new {@link AppSearchBatchResultParcel} from the given {@link GenericDocumentParcel}
      * results.
      */
+    @SuppressWarnings("unchecked")
     public static AppSearchBatchResultParcel<GenericDocumentParcel>
             fromStringToGenericDocumentParcel(
                     @NonNull AppSearchBatchResult<String, GenericDocumentParcel> result) {
@@ -101,12 +106,13 @@ public final class AppSearchBatchResultParcel<ValueType> extends AbstractSafePar
             } else {
                 appSearchResultParcel = AppSearchResultParcel.fromFailedResult(entry.getValue());
             }
-            appSearchResultBundle.putParcelable(entry.getKey(), appSearchResultParcel);
+            BundleUtil.putParcelable(appSearchResultParcel, appSearchResultBundle, entry.getKey());
         }
         return new AppSearchBatchResultParcel<>(appSearchResultBundle);
     }
 
     /** Creates a new {@link AppSearchBatchResultParcel} from the given {@link Void} results. */
+    @SuppressWarnings("unchecked")
     public static AppSearchBatchResultParcel<Void> fromStringToVoid(
             @NonNull AppSearchBatchResult<String, Void> result) {
         Bundle appSearchResultBundle = new Bundle();
@@ -119,22 +125,24 @@ public final class AppSearchBatchResultParcel<ValueType> extends AbstractSafePar
             } else {
                 appSearchResultParcel = AppSearchResultParcel.fromFailedResult(entry.getValue());
             }
-            appSearchResultBundle.putParcelable(entry.getKey(), appSearchResultParcel);
+            BundleUtil.putParcelable(appSearchResultParcel, appSearchResultBundle, entry.getKey());
         }
         return new AppSearchBatchResultParcel<>(appSearchResultBundle);
     }
 
     @NonNull
+    @SuppressWarnings("unchecked")
     public AppSearchBatchResult<String, ValueType> getResult() {
         if (mResultCached == null) {
             AppSearchBatchResult.Builder<String, ValueType> builder =
                     new AppSearchBatchResult.Builder<>();
             for (String key : mAppSearchResultBundle.keySet()) {
-                builder.setResult(
-                        key,
-                        mAppSearchResultBundle
-                                .getParcelable(key, AppSearchResultParcel.class)
-                                .getResult());
+                AppSearchResultParcel<ValueType> appSearchResultParcel =
+                        BundleUtil.getParcelable(
+                                mAppSearchResultBundle, key, AppSearchResultParcel.CREATOR);
+                if (appSearchResultParcel != null) {
+                    builder.setResult(key, appSearchResultParcel.getResult());
+                }
             }
             mResultCached = builder.build();
         }
@@ -143,6 +151,7 @@ public final class AppSearchBatchResultParcel<ValueType> extends AbstractSafePar
 
     /** @hide */
     @Override
+    @SuppressWarnings("unchecked")
     public void writeToParcel(@NonNull Parcel dest, int flags) {
         byte[] bytes;
         // Create a parcel object to serialize results. So that we can use Parcel.writeBlob() to
@@ -151,10 +160,13 @@ public final class AppSearchBatchResultParcel<ValueType> extends AbstractSafePar
         Parcel data = Parcel.obtain();
         try {
             for (String key : mAppSearchResultBundle.keySet()) {
-                data.writeString(key);
                 AppSearchResultParcel<ValueType> appSearchResultParcel =
-                        mAppSearchResultBundle.getParcelable(key, AppSearchResultParcel.class);
-                AppSearchResultParcel.directlyWriteToParcel(appSearchResultParcel, data, flags);
+                        BundleUtil.getParcelable(
+                                mAppSearchResultBundle, key, AppSearchResultParcel.CREATOR);
+                if (appSearchResultParcel != null) {
+                    data.writeString(key);
+                    AppSearchResultParcel.directlyWriteToParcel(appSearchResultParcel, data, flags);
+                }
             }
             bytes = data.marshall();
         } finally {
