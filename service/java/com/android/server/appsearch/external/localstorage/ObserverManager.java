@@ -22,6 +22,7 @@ import android.app.appsearch.observer.DocumentChangeInfo;
 import android.app.appsearch.observer.ObserverCallback;
 import android.app.appsearch.observer.ObserverSpec;
 import android.app.appsearch.observer.SchemaChangeInfo;
+import android.app.appsearch.util.ExceptionUtil;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
@@ -71,8 +72,12 @@ public class ObserverManager {
 
         @Override
         public boolean equals(@Nullable Object o) {
-            if (this == o) return true;
-            if (!(o instanceof DocumentChangeGroupKey)) return false;
+            if (this == o) {
+                return true;
+            }
+            if (!(o instanceof DocumentChangeGroupKey)) {
+                return false;
+            }
             DocumentChangeGroupKey that = (DocumentChangeGroupKey) o;
             return mPackageName.equals(that.mPackageName)
                     && mDatabaseName.equals(that.mDatabaseName)
@@ -411,8 +416,9 @@ public class ObserverManager {
 
                             try {
                                 observerInfo.mObserverCallback.onSchemaChanged(schemaChangeInfo);
-                            } catch (Throwable t) {
-                                Log.w(TAG, "ObserverCallback threw exception during dispatch", t);
+                            } catch (RuntimeException e) {
+                                Log.w(TAG, "ObserverCallback threw exception during dispatch", e);
+                                ExceptionUtil.handleException(e);
                             }
                         }
                     }
@@ -432,8 +438,9 @@ public class ObserverManager {
                             try {
                                 observerInfo.mObserverCallback.onDocumentChanged(
                                         documentChangeInfo);
-                            } catch (Throwable t) {
-                                Log.w(TAG, "ObserverCallback threw exception during dispatch", t);
+                            } catch (RuntimeException e) {
+                                Log.w(TAG, "ObserverCallback threw exception during dispatch", e);
+                                ExceptionUtil.handleException(e);
                             }
                         }
                     }
