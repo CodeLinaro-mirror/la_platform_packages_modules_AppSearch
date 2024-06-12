@@ -32,10 +32,7 @@ public interface AppsIndexerConfig {
     /** Returns whether Apps Indexer is enabled. */
     boolean isAppsIndexerEnabled();
 
-    /**
-     * Returns the minimum internal in millis for two consecutive full update. This is only checked
-     * once after each boot.
-     */
+    /* Returns the minimum internal in millis for two consecutive scheduled updates. */
     long getAppsMaintenanceUpdateIntervalMillis();
 }
 
