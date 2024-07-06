@@ -22,6 +22,7 @@ import android.annotation.Nullable;
 import android.annotation.SuppressLint;
 import android.app.appsearch.AppSearchSchema;
 import android.app.appsearch.AppSearchSession;
+import android.app.appsearch.EmbeddingVector;
 import android.app.appsearch.GenericDocument;
 import android.app.appsearch.annotation.CanIgnoreReturnValue;
 import android.os.Parcel;
@@ -155,6 +156,14 @@ public final class GenericDocumentParcel extends AbstractSafeParcelable implemen
         mParentTypes = parentTypes;
     }
 
+    /** Returns the {@link GenericDocumentParcel} object from the given {@link GenericDocument}. */
+    @NonNull
+    public static GenericDocumentParcel fromGenericDocument(
+            @NonNull GenericDocument genericDocument) {
+        Objects.requireNonNull(genericDocument);
+        return genericDocument.getDocumentParcel();
+    }
+
     private static Map<String, PropertyParcel> createPropertyMapFromPropertyArray(
             @NonNull List<PropertyParcel> properties) {
         Objects.requireNonNull(properties);
@@ -279,7 +288,7 @@ public final class GenericDocumentParcel extends AbstractSafeParcelable implemen
         @Nullable private List<String> mParentTypes;
 
         /**
-         * Creates a new {@link GenericDocument.Builder}.
+         * Creates a new {@link GenericDocumentParcel.Builder}.
          *
          * <p>Document IDs are unique within a namespace.
          *
@@ -493,6 +502,15 @@ public final class GenericDocumentParcel extends AbstractSafeParcelable implemen
                 @NonNull String name, @NonNull GenericDocumentParcel[] values) {
             putInPropertyMap(
                     name, new PropertyParcel.Builder(name).setDocumentValues(values).build());
+            return this;
+        }
+
+        /** puts an array of {@link EmbeddingVector} in property map. */
+        @CanIgnoreReturnValue
+        @NonNull
+        public Builder putInPropertyMap(@NonNull String name, @NonNull EmbeddingVector[] values) {
+            putInPropertyMap(
+                    name, new PropertyParcel.Builder(name).setEmbeddingValues(values).build());
             return this;
         }
 
