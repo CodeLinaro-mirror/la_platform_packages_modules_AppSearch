@@ -93,10 +93,7 @@ public final class CommitBlobAidlRequest extends AbstractSafeParcelable {
         return mCallingDatabaseName;
     }
 
-    /**
-     * Gets the {@code list} of {@link AppSearchBlobHandle} to open {@link
-     * android.os.ParcelFileDescriptor} for commit blob.
-     */
+    /** Gets the {@code list} of {@link AppSearchBlobHandle} to commit blob to AppSearch. */
     @NonNull
     public List<AppSearchBlobHandle> getBlobHandles() {
         return Collections.unmodifiableList(mBlobHandles);
