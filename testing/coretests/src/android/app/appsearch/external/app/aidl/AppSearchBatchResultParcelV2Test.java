@@ -31,10 +31,8 @@ import org.junit.Test;
 
 import java.io.File;
 
-public class AppSearchBatchResultGeneralKeyParcelTest {
+public class AppSearchBatchResultParcelV2Test {
 
-    // TODO(b/273591938) remove label and use namespace to create blob handle when sync support blob
-    //  namespace to the framework.
     @Test
     public void testFromBlobHandleToPfd() throws Exception {
         File file = File.createTempFile(/* prefix= */ "appsearch", /* suffix= */ null);
@@ -47,15 +45,17 @@ public class AppSearchBatchResultGeneralKeyParcelTest {
         byte[] digest1 = calculateDigest(data1);
         byte[] data2 = generateRandomBytes(10); // 10 Bytes
         byte[] digest2 = calculateDigest(data2);
-        AppSearchBlobHandle blobHandle1 = AppSearchBlobHandle.createWithSha256(digest1, "label123");
-        AppSearchBlobHandle blobHandle2 = AppSearchBlobHandle.createWithSha256(digest2, "label123");
+        AppSearchBlobHandle blobHandle1 =
+                AppSearchBlobHandle.createWithSha256(digest1, "package1", "db1", "ns");
+        AppSearchBlobHandle blobHandle2 =
+                AppSearchBlobHandle.createWithSha256(digest2, "package1", "db1", "ns");
         AppSearchBatchResult<AppSearchBlobHandle, ParcelFileDescriptor> result =
                 new AppSearchBatchResult.Builder<AppSearchBlobHandle, ParcelFileDescriptor>()
                         .setResult(blobHandle1, successResult)
                         .setResult(blobHandle2, failureResult)
                         .build();
-        AppSearchBatchResultGeneralKeyParcel<AppSearchBlobHandle, ParcelFileDescriptor>
-                resultParcel = AppSearchBatchResultGeneralKeyParcel.fromBlobHandleToPfd(result);
+        AppSearchBatchResultParcelV2<AppSearchBlobHandle, ParcelFileDescriptor> resultParcel =
+                AppSearchBatchResultParcelV2.fromBlobHandleToPfd(result);
 
         AppSearchBatchResult<AppSearchBlobHandle, ParcelFileDescriptor> outResult =
                 resultParcel.getResult();
@@ -70,8 +70,10 @@ public class AppSearchBatchResultGeneralKeyParcelTest {
         byte[] digest1 = calculateDigest(data1);
         byte[] data2 = generateRandomBytes(10); // 10 Bytes
         byte[] digest2 = calculateDigest(data2);
-        AppSearchBlobHandle blobHandle1 = AppSearchBlobHandle.createWithSha256(digest1, "label123");
-        AppSearchBlobHandle blobHandle2 = AppSearchBlobHandle.createWithSha256(digest2, "label123");
+        AppSearchBlobHandle blobHandle1 =
+                AppSearchBlobHandle.createWithSha256(digest1, "package1", "db1", "ns");
+        AppSearchBlobHandle blobHandle2 =
+                AppSearchBlobHandle.createWithSha256(digest2, "package1", "db1", "ns");
         AppSearchResult<Void> successResult = AppSearchResult.newSuccessfulResult(null);
         AppSearchResult<Void> failureResult =
                 AppSearchResult.newFailedResult(AppSearchResult.RESULT_NOT_FOUND, "not found");
@@ -80,8 +82,8 @@ public class AppSearchBatchResultGeneralKeyParcelTest {
                         .setResult(blobHandle1, successResult)
                         .setResult(blobHandle2, failureResult)
                         .build();
-        AppSearchBatchResultGeneralKeyParcel<AppSearchBlobHandle, Void> resultParcel =
-                AppSearchBatchResultGeneralKeyParcel.fromBlobHandleToVoid(result);
+        AppSearchBatchResultParcelV2<AppSearchBlobHandle, Void> resultParcel =
+                AppSearchBatchResultParcelV2.fromBlobHandleToVoid(result);
 
         AppSearchBatchResult<AppSearchBlobHandle, Void> outResult = resultParcel.getResult();
 
