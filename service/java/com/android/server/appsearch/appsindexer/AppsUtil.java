@@ -229,15 +229,15 @@ public final class AppsUtil {
      *     ResolveInfo} for the packages launch activity.
      * @param indexerPackageName the name of the package performing the indexing. This should be the
      *     same as the package running the apps indexer so that qualified ids are correctly created.
-     * @param maxAppFunctions the max number of app functions to be indexed per package.
+     * @param config the app indexer config used to enforce various limits during parsing.
      */
     public static List<AppFunctionStaticMetadata> buildAppFunctionStaticMetadata(
             @NonNull PackageManager packageManager,
             @NonNull Map<PackageInfo, ResolveInfos> packageInfos,
             @NonNull String indexerPackageName,
-            int maxAppFunctions) {
+            AppsIndexerConfig config) {
         AppFunctionStaticMetadataParser parser =
-                new AppFunctionStaticMetadataParserImpl(indexerPackageName, maxAppFunctions);
+                new AppFunctionStaticMetadataParserImpl(indexerPackageName, config);
         return buildAppFunctionStaticMetadata(packageManager, packageInfos, parser);
     }
 
@@ -303,7 +303,7 @@ public final class AppsUtil {
      *     ResolveInfo} for the packages launch activity.
      * @param indexerPackageName the name of the package performing the indexing. This should be the
      *     same as the package running the apps indexer so that qualified ids are correctly created.
-     * @param maxAppFunctions the max number of app functions to be indexed per package.
+     * @param config the app indexer config used to enforce various limits during parsing.
      * @param schemasPerPackage a mapping of packages to a mapping of schema types to their
      *     corresponding {@link AppSearchSchema} objects, or null if there are no schemas to
      *     consider.
@@ -315,10 +315,10 @@ public final class AppsUtil {
                     @NonNull PackageManager packageManager,
                     @NonNull Map<PackageInfo, ResolveInfos> packageInfos,
                     @NonNull String indexerPackageName,
-                    int maxAppFunctions,
+                    AppsIndexerConfig config,
                     @Nullable Map<String, Map<String, AppSearchSchema>> schemasPerPackage) {
         AppFunctionStaticMetadataParser parser =
-                new AppFunctionStaticMetadataParserImpl(indexerPackageName, maxAppFunctions);
+                new AppFunctionStaticMetadataParserImpl(indexerPackageName, config);
         return buildAppFunctionStaticMetadataIntoMap(
                 packageManager, packageInfos, parser, schemasPerPackage);
     }
@@ -348,10 +348,26 @@ public final class AppsUtil {
             }
 
             String assetFilePath;
+            boolean isDynamicSchemaDefined =
+                    schemasPerPackage != null
+                            && !schemasPerPackage
+                                    .getOrDefault(packageInfo.packageName, Collections.emptyMap())
+                                    .isEmpty();
+
+            // Currently SDK will generate two files for hardcoded and dynamic schemas respectively
+            // so that devices running older AppSearch versions that are incompatible with new
+            // format can continue to parse app function documents while newer versions can use v2
+            // file for constructing app function documents with dynamic schema and more properties.
+            // TODO(b/386676297) - Merge these two when enough devices have changes to support
+            // dynamic schema.
+            String appFunctionXmlPropertyName =
+                    isDynamicSchemaDefined
+                            ? "android.app.appfunctions.v2"
+                            : "android.app.appfunctions";
             try {
                 PackageManager.Property property =
                         packageManager.getProperty(
-                                "android.app.appfunctions",
+                                appFunctionXmlPropertyName,
                                 new ComponentName(
                                         resolveInfo.serviceInfo.packageName,
                                         resolveInfo.serviceInfo.name));
@@ -360,16 +376,9 @@ public final class AppsUtil {
                 Log.w(TAG, "buildAppFunctionMetadataFromPackageInfo: Failed to get property", e);
                 continue;
             }
+
             if (assetFilePath != null) {
-                if (schemasPerPackage == null
-                        || schemasPerPackage
-                                .getOrDefault(packageInfo.packageName, Collections.emptyMap())
-                                .isEmpty()) {
-                    appFunctions.put(
-                            packageInfo.packageName,
-                            parser.parseIntoMap(
-                                    packageManager, packageInfo.packageName, assetFilePath));
-                } else {
+                if (isDynamicSchemaDefined) {
                     appFunctions.put(
                             packageInfo.packageName,
                             parser.parseIntoMapForGivenSchemas(
@@ -377,6 +386,11 @@ public final class AppsUtil {
                                     packageInfo.packageName,
                                     assetFilePath,
                                     schemasPerPackage.get(packageInfo.packageName)));
+                } else {
+                    appFunctions.put(
+                            packageInfo.packageName,
+                            parser.parseIntoMap(
+                                    packageManager, packageInfo.packageName, assetFilePath));
                 }
             }
         }

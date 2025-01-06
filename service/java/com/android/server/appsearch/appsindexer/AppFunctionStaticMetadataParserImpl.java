@@ -17,11 +17,8 @@ package com.android.server.appsearch.appsindexer;
 
 import android.annotation.NonNull;
 import android.app.appsearch.AppSearchSchema;
-import android.app.appsearch.AppSearchSchema.BooleanPropertyConfig;
-import android.app.appsearch.AppSearchSchema.LongPropertyConfig;
-import android.app.appsearch.AppSearchSchema.PropertyConfig;
-import android.app.appsearch.AppSearchSchema.StringPropertyConfig;
 import android.app.appsearch.AppSearchSchema.DocumentPropertyConfig;
+import android.app.appsearch.AppSearchSchema.PropertyConfig;
 import android.app.appsearch.GenericDocument;
 import android.app.appsearch.util.LogUtil;
 import android.content.pm.PackageManager;
@@ -30,6 +27,7 @@ import android.util.ArrayMap;
 import android.util.Log;
 
 import com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionStaticMetadata;
+import com.android.server.appsearch.external.localstorage.converter.GenericDocumentToProtoConverter;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
@@ -52,20 +50,27 @@ public class AppFunctionStaticMetadataParserImpl implements AppFunctionStaticMet
     private static final String XML_TAG_APPFUNCTION = "appfunction";
     private static final String XML_TAG_APPFUNCTIONS_ROOT = "appfunctions";
     private static final String XML_TAG_ID = "id";
+    private static final String SNAKE_CASE_SEPARATOR = "_";
 
     @NonNull private final String mIndexerPackageName;
     private final int mMaxAppFunctions;
 
     /**
+     * The maximum allowed size of a AppFunctionStaticMetadata generic document when parsed using an
+     * app defined schema.
+     */
+    private final int mMaxAllowedAppFunctionDocSizeInBytes;
+
+    /**
      * @param indexerPackageName the name of the package performing the indexing. This should be the
      *     same as the package running the apps indexer.
-     * @param maxAppFunctions The maximum number of app functions to be parsed per app. The parser
-     *     will stop once it exceeds the limit.
+     * @param config the app indexer config used to enforce various limits during parsing.
      */
     public AppFunctionStaticMetadataParserImpl(
-            @NonNull String indexerPackageName, int maxAppFunctions) {
+            @NonNull String indexerPackageName, AppsIndexerConfig config) {
         mIndexerPackageName = Objects.requireNonNull(indexerPackageName);
-        mMaxAppFunctions = maxAppFunctions;
+        mMaxAppFunctions = config.getMaxAppFunctionsPerPackage();
+        mMaxAllowedAppFunctionDocSizeInBytes = config.getMaxAllowedAppFunctionDocSizeInBytes();
     }
 
     // TODO(b/367410454): Remove this method once enable_apps_indexer_incremental_put flag is
@@ -225,28 +230,28 @@ public class AppFunctionStaticMetadataParserImpl implements AppFunctionStaticMet
             if (eventType == XmlPullParser.START_TAG
                     && !XML_TAG_APPFUNCTION.equals(parser.getName())) {
                 String tagName = parser.getName();
-                String tagValue = parser.nextText().trim();
                 switch (tagName) {
                     case "function_id":
-                        functionId = tagValue;
+                        functionId = parser.nextText().trim();
                         break;
                     case "schema_name":
-                        schemaName = tagValue;
+                        schemaName = parser.nextText().trim();
                         break;
                     case "schema_version":
-                        schemaVersion = Long.parseLong(tagValue);
+                        schemaVersion = Long.parseLong(parser.nextText().trim());
                         break;
                     case "schema_category":
-                        schemaCategory = tagValue;
+                        schemaCategory = parser.nextText().trim();
                         break;
                     case "enabled_by_default":
-                        enabledByDefault = Boolean.parseBoolean(tagValue);
+                        enabledByDefault = Boolean.parseBoolean(parser.nextText().trim());
                         break;
                     case "restrict_callers_with_execute_app_functions":
-                        restrictCallersWithExecuteAppFunctions = Boolean.parseBoolean(tagValue);
+                        restrictCallersWithExecuteAppFunctions =
+                                Boolean.parseBoolean(parser.nextText().trim());
                         break;
                     case "display_name_string_res":
-                        displayNameStringRes = Integer.parseInt(tagValue);
+                        displayNameStringRes = Integer.parseInt(parser.nextText().trim());
                         break;
                 }
             }
@@ -329,23 +334,29 @@ public class AppFunctionStaticMetadataParserImpl implements AppFunctionStaticMet
 
         while (eventType != XmlPullParser.END_DOCUMENT) {
             String tagName = parser.getName();
+            // In previous document formats <appfunction> XML tag was used for denoting
+            // AppFunctionStaticMetadata type.
+            String schemaType =
+                    XML_TAG_APPFUNCTION.equals(tagName)
+                            ? AppFunctionStaticMetadata.SCHEMA_TYPE
+                            : tagName;
             String schemaName =
-                    AppFunctionStaticMetadata.getSchemaNameForPackage(packageName, tagName);
+                    AppFunctionStaticMetadata.getSchemaNameForPackage(packageName, schemaType);
             if (eventType == XmlPullParser.START_TAG && schemas.containsKey(schemaName)) {
                 GenericDocument appFnMetadata =
                         parseXmlElementToGenericDocument(
                                 parser,
                                 packageName,
-                                tagName,
+                                schemaType,
                                 qualifiedPropertyNamesToPropertyConfig);
-                if (appFnMetadata != null) {
-                    appFnMetadatas.put(
-                            appFnMetadata.getPropertyString(
-                                    AppFunctionStaticMetadata.PROPERTY_FUNCTION_ID),
-                            new AppFunctionStaticMetadata(appFnMetadata));
-                } else if (!XML_TAG_APPFUNCTIONS_ROOT.equals(tagName)) {
-                    throw new XmlPullParserException("Unknwown tag: " + tagName);
+                // Skip docs exceeding max size.
+                if (!validateDocumentSize(appFnMetadata)) {
+                    continue;
                 }
+                appFnMetadatas.put(
+                        appFnMetadata.getPropertyString(
+                                AppFunctionStaticMetadata.PROPERTY_FUNCTION_ID),
+                        new AppFunctionStaticMetadata(appFnMetadata));
                 if (appFnMetadatas.size() >= mMaxAppFunctions) {
                     if (LogUtil.DEBUG) {
                         Log.d(TAG, "Exceeding the max number of app functions: " + packageName);
@@ -392,12 +403,15 @@ public class AppFunctionStaticMetadataParserImpl implements AppFunctionStaticMet
         Map<String, List<String>> primitivePropertyValues = new ArrayMap<>();
         Map<String, List<GenericDocument>> nestedDocumentValues = new ArrayMap<>();
         String startTag = parser.getName();
-        String currentPropertyPath = null;
+        String currentPropertyPath;
 
         while (parser.getEventType() != XmlPullParser.END_DOCUMENT) {
             switch (parser.getEventType()) {
                 case XmlPullParser.START_TAG:
-                    currentPropertyPath = createQualifiedPropertyName(schemaType, parser.getName());
+                    currentPropertyPath =
+                            createQualifiedPropertyName(
+                                    schemaType,
+                                    toLowerCamelCase(parser.getName(), SNAKE_CASE_SEPARATOR));
                     PropertyConfig propertyConfig =
                             qualifiedPropertyNamesToPropertyConfig.get(currentPropertyPath);
                     if (propertyConfig instanceof DocumentPropertyConfig) {
@@ -439,8 +453,8 @@ public class AppFunctionStaticMetadataParserImpl implements AppFunctionStaticMet
                             docBuilder.setPropertyDocument(
                                     propertyName, entry.getValue().toArray(new GenericDocument[0]));
                         }
-                        GenericDocument doc =  docBuilder.build();
-                        if(doc.getId().isEmpty()) {
+                        GenericDocument doc = docBuilder.build();
+                        if (doc.getId().isEmpty()) {
                             throw new XmlPullParserException(
                                     "No id found for document of type: " + schemaType);
                         }
@@ -488,6 +502,43 @@ public class AppFunctionStaticMetadataParserImpl implements AppFunctionStaticMet
         }
 
         return propertyMap;
+    }
+
+    /**
+     * Converts a string of words separated by separator to lowerCamelCase.
+     *
+     * <p>Returns the same string if string doesn't contain the separator.
+     */
+    private static String toLowerCamelCase(@NonNull String str, @NonNull String separator) {
+        if (str.isEmpty()) {
+            return "";
+        }
+
+        // Return the original string if the separator is not present
+        if (!str.contains(separator)) {
+            return str;
+        }
+
+        StringBuilder builder = new StringBuilder(str.length());
+        boolean capitalizeNext = false;
+
+        for (int i = 0; i < str.length(); i++) {
+            char currentChar = str.charAt(i);
+            // skip multiple consecutive separators
+            if (str.startsWith(separator, i)) {
+                capitalizeNext = true;
+                i += separator.length() - 1;
+            } else {
+                if (capitalizeNext) {
+                    builder.append(Character.toUpperCase(currentChar));
+                    capitalizeNext = false;
+                } else {
+                    builder.append(Character.toLowerCase(currentChar));
+                }
+            }
+        }
+
+        return builder.toString();
     }
 
     /**
@@ -543,6 +594,29 @@ public class AppFunctionStaticMetadataParserImpl implements AppFunctionStaticMet
             case PropertyConfig.DATA_TYPE_STRING:
                 builder.setPropertyString(propertyConfig.getName(), values.toArray(new String[0]));
                 break;
+            default:
+                // fall-through
         }
+    }
+
+    /**
+     * Returns whether the app function document size is less than or equal to {@link
+     * #mMaxAllowedAppFunctionDocSizeInBytes}.
+     *
+     * @param appFnMetadata the app function metadata document to validate.
+     */
+    private boolean validateDocumentSize(@NonNull GenericDocument appFnMetadata) {
+        Objects.requireNonNull(appFnMetadata);
+
+        if (GenericDocumentToProtoConverter.toDocumentProto(appFnMetadata).getSerializedSize()
+                > mMaxAllowedAppFunctionDocSizeInBytes) {
+            Log.w(
+                    TAG,
+                    "Function exceeds the max allowed size of an app function document: "
+                            + appFnMetadata.getPropertyString(
+                                    AppFunctionStaticMetadata.PROPERTY_FUNCTION_ID));
+            return false;
+        }
+        return true;
     }
 }
