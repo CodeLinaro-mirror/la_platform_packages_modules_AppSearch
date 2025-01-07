@@ -38,6 +38,7 @@ import static org.mockito.Mockito.when;
 
 import android.app.appsearch.AppSearchSchema;
 import android.app.appsearch.GenericDocument;
+import android.app.appsearch.testutil.AppSearchTestUtils;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.ContextWrapper;
@@ -47,8 +48,6 @@ import android.content.pm.ResolveInfo;
 import android.content.res.AssetManager;
 import android.content.res.Resources;
 import android.platform.test.annotations.RequiresFlagsEnabled;
-import android.platform.test.flag.junit.CheckFlagsRule;
-import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 
 import androidx.test.core.app.ApplicationProvider;
 
@@ -62,6 +61,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.RuleChain;
 import org.junit.rules.TemporaryFolder;
 import org.mockito.Mockito;
 import org.mockito.MockitoSession;
@@ -79,8 +79,7 @@ public class AppsIndexerImplTest {
     private Context mContext;
     @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
-    @Rule
-    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
+    @Rule public final RuleChain mRuleChain = AppSearchTestUtils.createCommonTestRules();
 
     private final ExecutorService mSingleThreadedExecutor = Executors.newSingleThreadExecutor();
     private final AppsIndexerConfig mAppsIndexerConfig = new TestAppsIndexerConfig();
@@ -716,11 +715,18 @@ public class AppsIndexerImplTest {
         List<PackageInfo> fakePackages = ImmutableList.of(dynamicSchemaApp);
         setUpAppFunctionProperties(pm1, dynamicSchemaAppFunctionResolveInfo);
         AssetManager assetManager = Mockito.mock(AssetManager.class);
+        String xsdWithNestedTypes =
+                "<xs:schema xmlns:xs=\"http://www.w3.org/2001/XMLSchema\">"
+                        + "    <xs:documentType name=\"AppFunctionStaticMetadata\">\n"
+                        + APP_FUNCTION_STATIC_METADATA_PARENT_PROPERTIES
+                        + "        <xs:element name=\"nested\" type=\"appfn:NestedType\" />\n"
+                        + "    </xs:documentType>\n"
+                        + "    <xs:documentType name=\"NestedType\">\n"
+                        + "        <xs:element name=\"value\" type=\"xs:string\" />\n"
+                        + "    </xs:documentType>\n"
+                        + "</xs:schema>";
         when(assetManager.open(eq("app_function_schema.xml")))
-                .thenAnswer(
-                        inv ->
-                                new ByteArrayInputStream(
-                                        APP_FUNCTION_STATIC_METADATA_PARENT_SCHEMA_XSD.getBytes()));
+                .thenAnswer(inv -> new ByteArrayInputStream(xsdWithNestedTypes.getBytes()));
         String appFunctionsXml =
                 "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
                         + "<appfunctions>\n"
@@ -728,6 +734,10 @@ public class AppsIndexerImplTest {
                         + "    <id>com.dynamicSchemaApp/com.dynamicSchemaApp.utils#print</id>\n"
                         + "    <functionId>com.dynamicSchemaApp.utils#print</functionId>\n"
                         + "    <packageName>com.fake.package0</packageName>\n"
+                        + "    <nested>\n"
+                        + "     <id>com.dynamicSchemaApp.utils#print/nested0</id>\n"
+                        + "     <value>innerProperty</value>\n"
+                        + "    </nested>\n"
                         + "  </AppFunctionStaticMetadata>\n"
                         + "</appfunctions>";
         when(assetManager.open(eq("app_functions.xml")))
@@ -761,11 +771,19 @@ public class AppsIndexerImplTest {
                         + "    <id>com.dynamicSchemaApp/com.dynamicSchemaApp.utils#print</id>\n"
                         + "    <functionId>com.dynamicSchemaApp.utils#print</functionId>\n"
                         + "    <packageName>com.fake.package0</packageName>\n"
+                        + "    <nested>\n"
+                        + "     <id>com.dynamicSchemaApp.utils#print/nested0</id>\n"
+                        + "     <value>innerProperty</value>\n"
+                        + "    </nested>\n"
                         + "  </AppFunctionStaticMetadata>\n"
                         + "  <AppFunctionStaticMetadata>\n"
                         + "    <id>com.dynamicSchemaApp/com.dynamicSchemaApp.utils#search</id>\n"
                         + "    <functionId>com.dynamicSchemaApp.utils#search</functionId>\n"
                         + "    <packageName>com.fake.package0</packageName>\n"
+                        + "    <nested>\n"
+                        + "     <id>com.dynamicSchemaApp.utils#search/nested0</id>\n"
+                        + "     <value>innerProperty</value>\n"
+                        + "    </nested>\n"
                         + "  </AppFunctionStaticMetadata>\n"
                         + "</appfunctions>";
         when(assetManager.open(eq("app_functions.xml")))
@@ -887,7 +905,7 @@ public class AppsIndexerImplTest {
                                         resolveInfo.serviceInfo.name))))
                 .thenReturn(new PackageManager.Property("", "app_function_schema.xml", "", ""));
         when(pm.getProperty(
-                        eq("android.app.appfunctions"),
+                        eq("android.app.appfunctions.v2"),
                         eq(
                                 new ComponentName(
                                         resolveInfo.serviceInfo.packageName,

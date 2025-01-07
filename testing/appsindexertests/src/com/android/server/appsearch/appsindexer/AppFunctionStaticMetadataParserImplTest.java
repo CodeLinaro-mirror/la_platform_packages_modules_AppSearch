@@ -83,7 +83,7 @@ public class AppFunctionStaticMetadataParserImplTest {
     public void setUp() throws Exception {
         mParser =
                 new AppFunctionStaticMetadataParserImpl(
-                        TEST_INDEXER_PACKAGE_NAME, /* maxAppFunctions= */ 2);
+                        TEST_INDEXER_PACKAGE_NAME, new TestAppsIndexerConfig());
 
         when(mPackageManager.getResourcesForApplication(TEST_PACKAGE_NAME)).thenReturn(mResources);
         when(mResources.getAssets()).thenReturn(mAssetManager);
@@ -156,6 +156,32 @@ public class AppFunctionStaticMetadataParserImplTest {
     }
 
     @Test
+    public void parse_ignoresUnknownProperties() throws Exception {
+        setXmlInput(
+                "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
+                        + "<version>1</version>\n"
+                        + "<appfunctions>\n"
+                        + "  <appfunction>\n"
+                        + "    <function_id>com.example.utils#print</function_id>\n"
+                        + "    <parameters><name>test</name></parameters>\n"
+                        + "    <unknown_property>test</unknown_property>\n"
+                        + "  </appfunction>\n"
+                        + "</appfunctions>");
+
+        List<AppFunctionStaticMetadata> appFunctions =
+                mParser.parse(mPackageManager, TEST_PACKAGE_NAME, TEST_XML_ASSET_FILE_PATH);
+
+        assertThat(appFunctions).hasSize(1);
+        // Only contain known properties from XML or properties populated by default.
+        assertThat(appFunctions.getFirst().getPropertyNames())
+                .containsExactly(
+                        "functionId",
+                        "packageName",
+                        "enabledByDefault",
+                        "mobileApplicationQualifiedId");
+    }
+
+    @Test
     public void parse_missingFunctionId() throws Exception {
         setXmlInput(
                 "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
@@ -197,7 +223,15 @@ public class AppFunctionStaticMetadataParserImplTest {
 
     @Test
     public void parse_exceedMaxNumAppFunctions() throws Exception {
-        // maxAppFunctions was set to be 2.
+        mParser =
+                new AppFunctionStaticMetadataParserImpl(
+                        TEST_INDEXER_PACKAGE_NAME,
+                        new TestAppsIndexerConfig() {
+                            @Override
+                            public int getMaxAppFunctionsPerPackage() {
+                                return 2;
+                            }
+                        });
         setXmlInput(
                 "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
                         + "<version>1</version>\n"
@@ -306,6 +340,15 @@ public class AppFunctionStaticMetadataParserImplTest {
     @Test
     public void parseIntoMapForGivenSchemas_exceedMaxNumAppFunctions_parsesOnlyMaxNumAppFunctions()
             throws Exception {
+        mParser =
+                new AppFunctionStaticMetadataParserImpl(
+                        TEST_INDEXER_PACKAGE_NAME,
+                        new TestAppsIndexerConfig() {
+                            @Override
+                            public int getMaxAppFunctionsPerPackage() {
+                                return 2;
+                            }
+                        });
         setXmlInput(
                 "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
                         + "<appfunctions>\n"
@@ -437,5 +480,96 @@ public class AppFunctionStaticMetadataParserImplTest {
                                 actualAppFunction.getPropertyStringArray(
                                         "appFunctionParameterMetadata[1].parameterName")))
                 .containsExactly("test3");
+    }
+
+    @Test
+    public void parseIntoMapForGivenSchemas_validXmlWithUnderscores_worksWithDynamicSchemas()
+            throws Exception {
+        setXmlInput(
+                "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
+                        + "<appfunctions>\n"
+                        + "  <appfunction>\n"
+                        + "    <id>com.example/com.example.utils#print</id>\n"
+                        + "    <function__id>com.example.utils#print</function__id>\n"
+                        + "    <enabled_by_default>true</enabled_by_default>\n"
+                        + "    <scHema_veRsion>10</scHema_veRsion>\n"
+                        + "  </appfunction>\n"
+                        + "</appfunctions>");
+
+        Map<String, AppFunctionStaticMetadata> appFunctions =
+                mParser.parseIntoMapForGivenSchemas(
+                        mPackageManager, TEST_PACKAGE_NAME, TEST_XML_ASSET_FILE_PATH, TEST_SCHEMAS);
+
+        assertThat(appFunctions).hasSize(1);
+        assertThat(appFunctions).containsKey("com.example.utils#print");
+        AppFunctionStaticMetadata actualAppFunction = appFunctions.get("com.example.utils#print");
+        assertThat(actualAppFunction.getNamespace()).isEqualTo("app_functions");
+        assertThat(actualAppFunction.getId()).isEqualTo("com.example/com.example.utils#print");
+        assertThat(actualAppFunction.getSchemaType())
+                .isEqualTo("AppFunctionStaticMetadata-com.example.app");
+        assertThat(actualAppFunction.getPropertyString("functionId"))
+                .isEqualTo("com.example.utils#print");
+        assertThat(actualAppFunction.getPropertyBoolean("enabledByDefault")).isEqualTo(true);
+        assertThat(actualAppFunction.getPropertyLong("schemaVersion")).isEqualTo(10);
+    }
+
+    @Test
+    public void parseIntoMapForGivenSchemas_xmlTagWithStartingOrOnlyUnderscores_propertiesIgnored()
+            throws Exception {
+        setXmlInput(
+                "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
+                        + "<appfunctions>\n"
+                        + "  <AppFunctionStaticMetadata>\n"
+                        + "    <id>com.example/com.example.utils#print</id>\n"
+                        + "    <functionId>com.example.utils#print</functionId>\n"
+                        + "    <___>test</___>\n"
+                        + "    <_schema_version_>test</_schema_version_>\n"
+                        + "  </AppFunctionStaticMetadata>\n"
+                        + "</appfunctions>");
+
+        Map<String, AppFunctionStaticMetadata> appFunctions =
+                mParser.parseIntoMapForGivenSchemas(
+                        mPackageManager, TEST_PACKAGE_NAME, TEST_XML_ASSET_FILE_PATH, TEST_SCHEMAS);
+
+        assertThat(appFunctions).hasSize(1);
+        assertThat(appFunctions).containsKey("com.example.utils#print");
+        AppFunctionStaticMetadata actualAppFunction = appFunctions.get("com.example.utils#print");
+        assertThat(actualAppFunction.getNamespace()).isEqualTo("app_functions");
+        assertThat(actualAppFunction.getId()).isEqualTo("com.example/com.example.utils#print");
+        assertThat(actualAppFunction.getSchemaType())
+                .isEqualTo("AppFunctionStaticMetadata-com.example.app");
+        assertThat(actualAppFunction.getPropertyString("functionId"))
+                .isEqualTo("com.example.utils#print");
+        assertThat(actualAppFunction.getPropertyNames()).containsExactly("functionId");
+    }
+
+    @Test
+    public void parseIntoMapForGivenSchemas_exceedMaxAllowedDocSize_skipsTheAppFunction()
+            throws Exception {
+        mParser =
+                new AppFunctionStaticMetadataParserImpl(
+                        TEST_INDEXER_PACKAGE_NAME,
+                        new TestAppsIndexerConfig() {
+                            @Override
+                            public int getMaxAllowedAppFunctionDocSizeInBytes() {
+                                return 0;
+                            }
+                        });
+        setXmlInput(
+                "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
+                        + "<appfunctions>\n"
+                        + "  <AppFunctionStaticMetadata>\n"
+                        + "    <id>com.example/com.example.utils#print</id>\n"
+                        + "    <functionId>com.example.utils#print</functionId>\n"
+                        + "    <enabledByDefault>true</enabledByDefault>\n"
+                        + "    <schemaVersion>10</schemaVersion>\n"
+                        + "  </AppFunctionStaticMetadata>\n"
+                        + "</appfunctions>");
+
+        Map<String, AppFunctionStaticMetadata> appFunctions =
+                mParser.parseIntoMapForGivenSchemas(
+                        mPackageManager, TEST_PACKAGE_NAME, TEST_XML_ASSET_FILE_PATH, TEST_SCHEMAS);
+
+        assertThat(appFunctions).isEmpty();
     }
 }
