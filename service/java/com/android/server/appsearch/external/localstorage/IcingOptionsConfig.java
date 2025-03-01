@@ -18,7 +18,11 @@ package com.android.server.appsearch.external.localstorage;
 
 import android.app.appsearch.SearchSpec;
 
+import com.android.appsearch.flags.Flags;
+
 import com.google.android.icing.proto.IcingSearchEngineOptions;
+
+import org.jspecify.annotations.NonNull;
 
 /**
  * An interface exposing the optional config flags in {@link IcingSearchEngineOptions} used to
@@ -73,6 +77,8 @@ public interface IcingOptionsConfig {
     boolean DEFAULT_BUILD_PROPERTY_EXISTENCE_METADATA_HITS = false;
 
     long DEFAULT_ORPHAN_BLOB_TIME_TO_LIVE_MS = 7 * 24 * 60 * 60 * 1000L; // 1 week.
+
+    String DEFAULT_ICU_DATA_FILE_ABSOLUTE_PATH = "";
 
     /**
      * The maximum allowable token length. All tokens in excess of this size will be truncated to
@@ -230,4 +236,44 @@ public interface IcingOptionsConfig {
      * no reference document linked to it.
      */
     long getOrphanBlobTimeToLiveMs();
+
+    /**
+     * Config for {@link com.google.android.icing.proto.IcingSearchEngineOptions}.
+     *
+     * <p>The absolute path to the ICU data file. If a valid path has been provided, it will be used
+     * to initialize ICU.
+     */
+    String getIcuDataFileAbsolutePath();
+
+    /**
+     * Converts to an {@link IcingSearchEngineOptions} instance.
+     *
+     * @param baseDir base directory of the icing instance.
+     */
+    default @NonNull IcingSearchEngineOptions toIcingSearchEngineOptions(@NonNull String baseDir) {
+        return IcingSearchEngineOptions.newBuilder()
+                .setBaseDir(baseDir)
+                .setMaxTokenLength(getMaxTokenLength())
+                .setIndexMergeSize(getIndexMergeSize())
+                .setDocumentStoreNamespaceIdFingerprint(getDocumentStoreNamespaceIdFingerprint())
+                .setOptimizeRebuildIndexThreshold(getOptimizeRebuildIndexThreshold())
+                .setCompressionLevel(getCompressionLevel())
+                .setAllowCircularSchemaDefinitions(getAllowCircularSchemaDefinitions())
+                .setPreMappingFbv(getUsePreMappingWithFileBackedVector())
+                .setUsePersistentHashMap(getUsePersistentHashMap())
+                .setIntegerIndexBucketSplitThreshold(getIntegerIndexBucketSplitThreshold())
+                .setLiteIndexSortAtIndexing(getLiteIndexSortAtIndexing())
+                .setLiteIndexSortSize(getLiteIndexSortSize())
+                .setUseNewQualifiedIdJoinIndex(getUseNewQualifiedIdJoinIndex())
+                .setBuildPropertyExistenceMetadataHits(getBuildPropertyExistenceMetadataHits())
+                .setEnableBlobStore(Flags.enableBlobStore())
+                .setOrphanBlobTimeToLiveMs(getOrphanBlobTimeToLiveMs())
+                .setEnableEmbeddingIndex(Flags.enableSchemaEmbeddingPropertyConfig())
+                .setEnableEmbeddingQuantization(Flags.enableSchemaEmbeddingQuantization())
+                .setEnableScorableProperties(Flags.enableScorableProperty())
+                .setEnableQualifiedIdJoinIndexV3AndDeletePropagateFrom(
+                        Flags.enableDeletePropagationType())
+                .setIcuDataFileAbsolutePath(getIcuDataFileAbsolutePath())
+                .build();
+    }
 }
