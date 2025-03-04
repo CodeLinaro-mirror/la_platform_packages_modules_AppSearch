@@ -20,7 +20,6 @@ import android.content.Intent;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.os.SharedMemory;
-import android.os.SystemProperties;
 import android.system.OsConstants;
 import android.system.virtualmachine.VirtualMachine;
 import android.system.virtualmachine.VirtualMachineCallback;
@@ -38,11 +37,10 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Service that provides isolated storage.
@@ -57,14 +55,11 @@ public class IsolatedStorageService extends Service {
     private static final String VM_NAME = "isolated_storage_service_vm";
     private static final String PAYLOAD_BINARY_NAME = "libisolated_storage_service.so";
 
-    private static final String SYSTEM_PROPERTY_ENABLE_DEBUG_BUILD = "ro.debuggable";
-    private static final boolean IS_DEBUG_BUILD =
-            SystemProperties.getInt(SYSTEM_PROPERTY_ENABLE_DEBUG_BUILD, /* def= */ 0) == 1;
-
     private final ExecutorService mExecutorService = Executors.newFixedThreadPool(1);
     private final IsolatedStorageServiceStub mIsolatedStorageServiceStub =
             new IsolatedStorageServiceStub();
 
+    private final CountDownLatch mIsolatedStorageServiceLatch = new CountDownLatch(1);
     private volatile com.android.isolated_storage_service.IIsolatedStorageService
             mIsolatedStorageService;
 
@@ -79,22 +74,19 @@ public class IsolatedStorageService extends Service {
         return START_STICKY;
     }
 
-    private CompletableFuture<Void> startVm(ServiceConfig config) {
-        CompletableFuture<Void> future = new CompletableFuture<>();
-        VirtualMachine vm = maybeCreateVm(config);
+    private void startVm(VmConfig vmConfig) {
+        VirtualMachine vm = maybeCreateVm(vmConfig);
         if (vm == null) {
             Log.e(TAG, "Unable to create/get VirtualMachine");
-            future.cancel(/* mayInterruptIfRunning= */ true);
-            return future;
+            return;
         }
-        VmCallback vmCallback = new VmCallback(future);
-        vm.setCallback(mExecutorService, vmCallback);
+        Callback callback = new Callback();
+        vm.setCallback(mExecutorService, callback);
         try {
             vm.run();
         } catch (VirtualMachineException e) {
             Log.e(TAG, "Failed to run " + VM_NAME, e);
         }
-        return future;
     }
 
     /**
@@ -103,7 +95,7 @@ public class IsolatedStorageService extends Service {
      * <p>If the VM already exists, return it. If the VM doesn't exist or is deleted, create a new
      * VM and return it. Return {@code null} if failed to get or create the VM.
      */
-    private @Nullable VirtualMachine maybeCreateVm(ServiceConfig config) {
+    private @Nullable VirtualMachine maybeCreateVm(VmConfig vmConfig) {
         VirtualMachineManager vmm = getSystemService(VirtualMachineManager.class);
         if (vmm == null) {
             Log.e(TAG, "Unable to get VirtualMachineManager");
@@ -123,48 +115,30 @@ public class IsolatedStorageService extends Service {
         } else {
             Log.i(TAG, "Virtual machine " + VM_NAME + " is deleted. Creating one");
         }
-        return createVm(vmm, config);
+        return createVm(vmm, vmConfig);
     }
 
-    private @Nullable VirtualMachine createVm(
-            VirtualMachineManager vmm, ServiceConfig serviceConfig) {
-        final int vmDebugLevel =
-                IS_DEBUG_BUILD
-                        ? VirtualMachineConfig.DEBUG_LEVEL_FULL
-                        : VirtualMachineConfig.DEBUG_LEVEL_NONE;
+    private @Nullable VirtualMachine createVm(VirtualMachineManager vmm, VmConfig vmConfig) {
+        VirtualMachineConfig config =
+                new VirtualMachineConfig.Builder(this)
+                        .setPayloadBinaryName(PAYLOAD_BINARY_NAME)
+                        .setProtectedVm(true)
+                        .setDebugLevel(VirtualMachineConfig.DEBUG_LEVEL_FULL)
+                        .setEncryptedStorageBytes(vmConfig.encryptedStorageBytes)
+                        .setMemoryBytes(vmConfig.memoryBytes)
+                        .setCpuTopology(VirtualMachineConfig.CPU_TOPOLOGY_MATCH_HOST)
+                        .setShouldUseHugepages(true)
+                        .build();
         try {
-            VirtualMachineConfig config =
-                    new VirtualMachineConfig.Builder(this)
-                            .setPayloadBinaryName(PAYLOAD_BINARY_NAME)
-                            .setProtectedVm(true)
-                            .setDebugLevel(vmDebugLevel)
-                            .setEncryptedStorageBytes(serviceConfig.pVmEncryptedStorageBytes)
-                            .setMemoryBytes(serviceConfig.pVmMemoryBytes)
-                            .setCpuTopology(VirtualMachineConfig.CPU_TOPOLOGY_ONE_CPU)
-                            .setShouldUseHugepages(true)
-                            .build();
-            try {
-                return vmm.create(VM_NAME, config);
-            } catch (VirtualMachineException e) {
-                Log.e(TAG, "Failed to create virtual machine " + VM_NAME, e);
-                return null;
-            }
-        } catch (IllegalArgumentException
-                | IllegalStateException
-                | UnsupportedOperationException e) {
-            Log.e(TAG, "Failed to create virtual machine config " + VM_NAME, e);
+            return vmm.create(VM_NAME, config);
+        } catch (VirtualMachineException e) {
+            Log.e(TAG, "Failed to create virtual machine " + VM_NAME, e);
             return null;
         }
     }
 
     /** Callbacks for pVM status changes. */
-    private class VmCallback implements VirtualMachineCallback {
-
-        private final CompletableFuture<Void> mFuture;
-
-        VmCallback(@NonNull CompletableFuture<Void> future) {
-            mFuture = Objects.requireNonNull(future);
-        }
+    private class Callback implements VirtualMachineCallback {
 
         @Override
         public void onPayloadStarted(VirtualMachine vm) {
@@ -181,10 +155,9 @@ public class IsolatedStorageService extends Service {
                                         vm.connectToVsockServer(
                                                 com.android.isolated_storage_service
                                                         .IIsolatedStorageService.PORT));
-                mFuture.complete(null);
+                mIsolatedStorageServiceLatch.countDown();
             } catch (VirtualMachineException e) {
                 Log.e(TAG, "Failed to connect to " + VM_NAME, e);
-                mFuture.completeExceptionally(e);
             }
         }
 
@@ -213,50 +186,47 @@ public class IsolatedStorageService extends Service {
     /** Implementation of the {@link IIsolatedStorageService}. */
     private class IsolatedStorageServiceStub extends IIsolatedStorageService.Stub {
         private static final int PAYLOAD_READY_WAIT_TIMEOUT_SECONDS = 15;
-        private final AtomicReference<ServiceConfig> mConfig = new AtomicReference<>();
 
         @GuardedBy("mEnginesLocked")
         private final Map<Integer, IIcingSearchEngine> mEnginesLocked = new ArrayMap<>();
 
         @Override
-        public void setup(ServiceConfig config) throws RemoteException {
-            synchronized (mConfig) {
-                if (mConfig.get() != null) {
-                    Log.w(TAG, "Service already set up");
-                    return;
+        public void startAndWaitForVm(VmConfig vmConfig, IVmPayloadReadyCallback callback)
+                throws RemoteException {
+            startVm(vmConfig);
+            try {
+                if (!mIsolatedStorageServiceLatch.await(
+                        PAYLOAD_READY_WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    // TODO: b/384768541 - add telemetry logging for timeout scenarios
+                    Log.e(
+                            TAG,
+                            "Timed out after waiting for payload ready for "
+                                    + PAYLOAD_READY_WAIT_TIMEOUT_SECONDS
+                                    + " seconds");
                 }
-                mConfig.set(config);
-                try {
-                    startVm(config).get(PAYLOAD_READY_WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-                } catch (Exception e) {
-                    Log.e(TAG, "Unable to wait for payload ready", e);
-                    throw new RemoteException(e.getMessage());
-                }
+            } catch (InterruptedException e) {
+                Log.e(TAG, "Unable to wait for payload ready");
             }
+            callback.onReady();
         }
 
         @Override
-        public IIcingSearchEngine getIcingSearchEngine(int userId) throws RemoteException {
-            synchronized (mConfig) {
-                if (mConfig.get() == null) {
-                    throw new RemoteException("Service not set up yet");
-                }
-                if (mIsolatedStorageService == null) {
-                    throw new RemoteException("pVM payload is not ready/available");
-                }
-                IIcingSearchEngine engine;
-                synchronized (mEnginesLocked) {
-                    engine = mEnginesLocked.get(userId);
-                    if (engine == null) {
-                        engine =
-                                new IcingSearchEngineStub(
-                                        mIsolatedStorageService.getOrCreateIcingConnection(userId),
-                                        mConfig.get().icingDataUnionSizeThresholdBytes);
-                        mEnginesLocked.put(userId, engine);
-                    }
-                }
-                return engine;
+        public void getIcingSearchEngine(int userId, IIcingSearchEngineCallback callback)
+                throws RemoteException {
+            if (mIsolatedStorageService == null) {
+                throw new RemoteException("pVM payload is not ready/available");
             }
+            IIcingSearchEngine engine;
+            synchronized (mEnginesLocked) {
+                engine = mEnginesLocked.get(userId);
+                if (engine == null) {
+                    engine =
+                            new IcingSearchEngineStub(
+                                    mIsolatedStorageService.getOrCreateIcingConnection(userId));
+                    mEnginesLocked.put(userId, engine);
+                }
+            }
+            callback.onResult(engine);
         }
     }
 
@@ -271,38 +241,10 @@ public class IsolatedStorageService extends Service {
     private static class IcingSearchEngineStub extends IIcingSearchEngine.Stub {
 
         private final com.android.isolated_storage_service.IIcingSearchEngine mVmEngine;
-        private final long mIcingDataUnionSizeThresholdBytes;
 
         IcingSearchEngineStub(
-                @NonNull com.android.isolated_storage_service.IIcingSearchEngine vmEngine,
-                long icingDataUnionSizeThresholdBytes) {
+                @NonNull com.android.isolated_storage_service.IIcingSearchEngine vmEngine) {
             mVmEngine = Objects.requireNonNull(vmEngine);
-            mIcingDataUnionSizeThresholdBytes = icingDataUnionSizeThresholdBytes;
-        }
-
-        /**
-         * Creates an {@link IcingDataUnion} instance to pass {@code data}.
-         *
-         * <p>For data smaller than {@link IcingSearchEngineStub#mIcingDataUnionSizeThresholdBytes},
-         * use byte array to pass it. For data larger than that, use {@link SharedMemory} to pass
-         * it. Using {@link SharedMemory} is more expensive so we want to avoid when possible.
-         */
-        private IcingDataUnion createIcingDataUnion(byte[] data) throws RemoteException {
-            IcingDataUnion union = new IcingDataUnion();
-            if (data.length < mIcingDataUnionSizeThresholdBytes) {
-                union.setRawData(data);
-            } else {
-                union.setSharedMemory(createSharedMemory(data));
-            }
-            return union;
-        }
-
-        private static byte[] readFromIcingDataUnion(IcingDataUnion union) throws RemoteException {
-            if (union.getTag() == IcingDataUnion.sharedMemory) {
-                return readFromSharedMemory(union.getSharedMemory());
-            } else {
-                return union.getRawData();
-            }
         }
 
         /**
@@ -360,8 +302,14 @@ public class IsolatedStorageService extends Service {
         }
 
         @Override
-        public byte[] initialize(byte[] icingSearchEngineOptionsProto) throws RemoteException {
-            return mVmEngine.initialize(icingSearchEngineOptionsProto);
+        public void initialize(
+                byte[] icingSearchEngineOptionsProto, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data =
+                    IcingSearchResult.Data.rawData(
+                            mVmEngine.initialize(icingSearchEngineOptionsProto));
+            callback.onResult(result);
         }
 
         @Override
@@ -370,59 +318,106 @@ public class IsolatedStorageService extends Service {
         }
 
         @Override
-        public byte[] setSchema(IcingDataUnion schemaProto, boolean ignoreErrorsAndDeleteDocuments)
+        public void setSchema(
+                SharedMemory schemaProto,
+                boolean ignoreErrorsAndDeleteDocuments,
+                IIcingSearchResultCallback callback)
                 throws RemoteException {
-            return mVmEngine.setSchema(
-                    readFromIcingDataUnion(schemaProto), ignoreErrorsAndDeleteDocuments);
+            IcingSearchResult result = new IcingSearchResult();
+            result.data =
+                    IcingSearchResult.Data.rawData(
+                            mVmEngine.setSchema(
+                                    readFromSharedMemory(schemaProto),
+                                    ignoreErrorsAndDeleteDocuments));
+            callback.onResult(result);
         }
 
         @Override
-        public IcingDataUnion getSchema() throws RemoteException {
-            return createIcingDataUnion(mVmEngine.getSchema());
+        public void getSchema(IIcingSearchResultCallback callback) throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.getSchema());
+            callback.onResult(result);
         }
 
         @Override
-        public IcingDataUnion getSchemaForDatabase(String database) throws RemoteException {
-            return createIcingDataUnion(mVmEngine.getSchemaForDatabase(database));
-        }
-
-        @Override
-        public byte[] getSchemaType(String schemaType) throws RemoteException {
-            return mVmEngine.getSchemaType(schemaType);
-        }
-
-        @Override
-        public byte[] put(IcingDataUnion documentProto) throws RemoteException {
-            return mVmEngine.put(readFromIcingDataUnion(documentProto));
-        }
-
-        @Override
-        public IcingDataUnion get(String namespace, String uri, byte[] getResultSpecProto)
+        public void getSchemaForDatabase(String database, IIcingSearchResultCallback callback)
                 throws RemoteException {
-            return createIcingDataUnion(mVmEngine.get(namespace, uri, getResultSpecProto));
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.getSchemaForDatabase(database));
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] reportUsage(byte[] usageReportProto) throws RemoteException {
-            return mVmEngine.reportUsage(usageReportProto);
-        }
-
-        @Override
-        public byte[] getAllNamespaces() throws RemoteException {
-            return mVmEngine.getAllNamespaces();
-        }
-
-        @Override
-        public IcingDataUnion search(
-                byte[] searchSpecProto, byte[] scoringSpecProto, byte[] resultSpecProto)
+        public void getSchemaType(String schemaType, IIcingSearchResultCallback callback)
                 throws RemoteException {
-            return createIcingDataUnion(
-                    mVmEngine.search(searchSpecProto, scoringSpecProto, resultSpecProto));
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.getSchemaType(schemaType));
+            callback.onResult(result);
         }
 
         @Override
-        public IcingDataUnion getNextPage(long nextPageToken) throws RemoteException {
-            return createIcingDataUnion(mVmEngine.getNextPage(nextPageToken));
+        public void put(SharedMemory documentProto, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data =
+                    IcingSearchResult.Data.rawData(
+                            mVmEngine.put(readFromSharedMemory(documentProto)));
+            callback.onResult(result);
+        }
+
+        @Override
+        public void get(
+                String namespace,
+                String uri,
+                byte[] getResultSpecProto,
+                IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data =
+                    IcingSearchResult.Data.sharedMemory(
+                            createSharedMemory(mVmEngine.get(namespace, uri, getResultSpecProto)));
+            callback.onResult(result);
+        }
+
+        @Override
+        public void reportUsage(byte[] usageReportProto, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.reportUsage(usageReportProto));
+            callback.onResult(result);
+        }
+
+        @Override
+        public void getAllNamespaces(IIcingSearchResultCallback callback) throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.getAllNamespaces());
+            callback.onResult(result);
+        }
+
+        @Override
+        public void search(
+                byte[] searchSpecProto,
+                byte[] scoringSpecProto,
+                byte[] resultSpecProto,
+                IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data =
+                    IcingSearchResult.Data.sharedMemory(
+                            createSharedMemory(
+                                    mVmEngine.search(
+                                            searchSpecProto, scoringSpecProto, resultSpecProto)));
+            callback.onResult(result);
+        }
+
+        @Override
+        public void getNextPage(long nextPageToken, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data =
+                    IcingSearchResult.Data.sharedMemory(
+                            createSharedMemory(mVmEngine.getNextPage(nextPageToken)));
+            callback.onResult(result);
         }
 
         @Override
@@ -431,82 +426,129 @@ public class IsolatedStorageService extends Service {
         }
 
         @Override
-        public byte[] openWriteBlob(byte[] blobHandleProto) throws RemoteException {
-            return mVmEngine.openWriteBlob(blobHandleProto);
+        public void openWriteBlob(byte[] blobHandleProto, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.openWriteBlob(blobHandleProto));
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] removeBlob(byte[] blobHandleProto) throws RemoteException {
-            return mVmEngine.removeBlob(blobHandleProto);
+        public void removeBlob(byte[] blobHandleProto, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.removeBlob(blobHandleProto));
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] openReadBlob(byte[] blobHandleProto) throws RemoteException {
-            return mVmEngine.openReadBlob(blobHandleProto);
+        public void openReadBlob(byte[] blobHandleProto, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.openReadBlob(blobHandleProto));
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] commitBlob(byte[] blobHandleProto) throws RemoteException {
-            return mVmEngine.commitBlob(blobHandleProto);
+        public void commitBlob(byte[] blobHandleProto, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.commitBlob(blobHandleProto));
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] deleteByUri(String namespace, String uri) throws RemoteException {
-            return mVmEngine.deleteDoc(namespace, uri);
+        public void deleteByUri(String namespace, String uri, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.deleteDoc(namespace, uri));
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] searchSuggestions(byte[] suggestionSpecProto) throws RemoteException {
-            return mVmEngine.searchSuggestions(suggestionSpecProto);
+        public void searchSuggestions(
+                byte[] suggestionSpecProto, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data =
+                    IcingSearchResult.Data.rawData(
+                            mVmEngine.searchSuggestions(suggestionSpecProto));
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] deleteByNamespace(String namespace) throws RemoteException {
-            return mVmEngine.deleteByNamespace(namespace);
+        public void deleteByNamespace(String namespace, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.deleteByNamespace(namespace));
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] deleteBySchemaType(String schemaType) throws RemoteException {
-            return mVmEngine.deleteBySchemaType(schemaType);
+        public void deleteBySchemaType(String schemaType, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.deleteBySchemaType(schemaType));
+            callback.onResult(result);
         }
 
         @Override
-        public IcingDataUnion deleteByQuery(
-                byte[] searchSpecProto, boolean returnDeletedDocumentInfo) throws RemoteException {
-            return createIcingDataUnion(
-                    mVmEngine.deleteByQuery(searchSpecProto, returnDeletedDocumentInfo));
+        public void deleteByQuery(
+                byte[] searchSpecProto,
+                boolean returnDeletedDocumentInfo,
+                IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data =
+                    IcingSearchResult.Data.rawData(
+                            mVmEngine.deleteByQuery(searchSpecProto, returnDeletedDocumentInfo));
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] persistToDisk(
-                /*PersistType.Code*/ int persistTypeCode) throws RemoteException {
-            return mVmEngine.persistToDisk(persistTypeCode);
+        public void persistToDisk(
+                /*PersistType.Code*/ int persistTypeCode, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.persistToDisk(persistTypeCode));
+            callback.onResult(result);
         }
 
         @Override
-        public IcingDataUnion optimize() throws RemoteException {
-            return createIcingDataUnion(mVmEngine.optimize());
+        public void optimize(IIcingSearchResultCallback callback) throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.optimize());
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] getOptimizeInfo() throws RemoteException {
-            return mVmEngine.getOptimizeInfo();
+        public void getOptimizeInfo(IIcingSearchResultCallback callback) throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.getOptimizeInfo());
+            callback.onResult(result);
         }
 
         @Override
-        public IcingDataUnion getStorageInfo() throws RemoteException {
-            return createIcingDataUnion(mVmEngine.getStorageInfo());
+        public void getStorageInfo(IIcingSearchResultCallback callback) throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.getStorageInfo());
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] getDebugInfo(
-                /*DebugInfoVerbosity.Code*/ int verbosity) throws RemoteException {
-            return mVmEngine.getDebugInfo(verbosity);
+        public void getDebugInfo(
+                /*DebugInfoVerbosity.Code*/ int verbosity, IIcingSearchResultCallback callback)
+                throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.getDebugInfo(verbosity));
+            callback.onResult(result);
         }
 
         @Override
-        public byte[] reset() throws RemoteException {
-            return mVmEngine.reset();
+        public void reset(IIcingSearchResultCallback callback) throws RemoteException {
+            IcingSearchResult result = new IcingSearchResult();
+            result.data = IcingSearchResult.Data.rawData(mVmEngine.reset());
+            callback.onResult(result);
         }
     }
 }

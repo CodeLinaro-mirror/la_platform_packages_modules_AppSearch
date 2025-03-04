@@ -212,7 +212,8 @@ public class AppsUtilTest {
 
         setupMockPackageManager(pm, fakePackages, fakeActivities, fakeAppFunctionServices);
 
-        AppFunctionDocumentParser parser = Mockito.mock(AppFunctionDocumentParser.class);
+        AppFunctionStaticMetadataParser parser =
+                Mockito.mock(AppFunctionStaticMetadataParser.class);
         for (PackageInfo packageInfo : fakePackages) {
             when(parser.parse(any(), eq(packageInfo.packageName), any()))
                     .thenReturn(

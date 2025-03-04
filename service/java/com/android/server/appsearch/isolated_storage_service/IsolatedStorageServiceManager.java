@@ -43,7 +43,7 @@ import com.google.android.icing.IcingSearchEngineInterface;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -56,14 +56,6 @@ public final class IsolatedStorageServiceManager {
     // max doc size is 512 KiB, and also leave some room for non-page fields in the response protos.
     public static final int DEFAULT_MAX_PAGE_BYTES_LIMIT_FOR_ISOLATED_STORAGE = 512 * 1024;
 
-    /**
-     * The default threshold to decide whether to use {@link android.os.SharedMemory SharedMemory}
-     * for icing data passing between the isolated storage service and AppSearch.
-     *
-     * <p>This is a cautious value set to half of {@link android.os.IBinder#MAX_IPC_SIZE}.
-     */
-    public static final int DEFAULT_ICING_DATA_UNION_SIZE_THRESHOLD_BYTES = 32 * 1024;
-
     public static final String SYSTEM_PROPERTY_ENABLE_ISOLATED_STORAGE =
             "appsearch.feature.enable_isolated_storage";
     public static final long DEFAULT_ENCRYPTED_STORAGE_BYTES = 500_000_000;
@@ -72,10 +64,13 @@ public final class IsolatedStorageServiceManager {
             "com.android.appsearch.ISOLATED_STORAGE_SERVICE";
     private static final String ISOLATED_STORAGE_SERVICE_CLASS_NAME =
             "com.android.server.appsearch.isolated_storage_service.IsolatedStorageService";
-    private static final int FUTURE_WAIT_TIMEOUT_SECONDS = 5;
+    private static final int PAYLOAD_READY_WAIT_TIMEOUT_SECONDS = 15;
+    private static final int LATCH_WAIT_TIMEOUT_SECONDS = 5;
 
     private final Context mContext;
     private final ServiceAppSearchConfig mAppSearchConfig;
+
+    private final CountDownLatch mVmPayloadReadyLatch = new CountDownLatch(1);
 
     private final AtomicReference<IIsolatedStorageService> mIsolatedStorageServiceLocked =
             new AtomicReference<>();
@@ -124,19 +119,31 @@ public final class IsolatedStorageServiceManager {
 
         Intent intent = new Intent();
         intent.setClassName(packageName, ISOLATED_STORAGE_SERVICE_CLASS_NAME);
-        CompletableFuture<Void> future = new CompletableFuture<>();
+        CountDownLatch latch = new CountDownLatch(1);
         mContext.bindServiceAsUser(
                 intent,
-                new IsolatedStorageServiceConnection(future),
+                new ServiceConnection() {
+                    @Override
+                    public void onServiceConnected(ComponentName className, IBinder service) {
+                        mIsolatedStorageServiceLocked.set(
+                                IIsolatedStorageService.Stub.asInterface(service));
+
+                        latch.countDown();
+                        Log.i(TAG, "IsolatedStorageService connected");
+                    }
+
+                    @Override
+                    public void onServiceDisconnected(ComponentName arg0) {
+                        Log.i(TAG, "IsolatedStorageService disconnected");
+                        mIsolatedStorageServiceLocked.set(null);
+                    }
+                },
                 Context.BIND_AUTO_CREATE | Context.BIND_IMPORTANT,
                 UserHandle.SYSTEM);
-        try {
-            future.get(FUTURE_WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (Exception e) {
-            Log.e(TAG, "Unable to bind to " + ISOLATED_STORAGE_SERVICE, e);
-            ExceptionUtil.handleException(e);
-            return;
-        }
+        waitFor(
+                latch,
+                LATCH_WAIT_TIMEOUT_SECONDS,
+                /* target= */ "isolated storage service connection");
         if (mIsolatedStorageServiceLocked.get() == null) {
             return;
         }
@@ -171,21 +178,34 @@ public final class IsolatedStorageServiceManager {
 
     private void waitForVmPayloadReady() {
         try {
-            mIsolatedStorageServiceLocked.get().setup(createServiceConfig());
+            mIsolatedStorageServiceLocked
+                    .get()
+                    .startAndWaitForVm(
+                            createVmConfig(),
+                            new IVmPayloadReadyCallback.Stub() {
+                                @Override
+                                public void onReady() {
+                                    Log.i(TAG, "VM payload is ready");
+
+                                    mVmPayloadReadyLatch.countDown();
+                                }
+                            });
         } catch (RemoteException e) {
             Log.e(TAG, "Unable to wait for pVM to be ready", e);
             ExceptionUtil.handleRemoteException(e);
         }
+
+        waitFor(
+                mVmPayloadReadyLatch,
+                PAYLOAD_READY_WAIT_TIMEOUT_SECONDS,
+                /* target= */ "pVM payload");
     }
 
-    private ServiceConfig createServiceConfig() {
-        ServiceConfig config = new ServiceConfig();
-        config.pVmEncryptedStorageBytes =
-                mAppSearchConfig.getIsolatedStorageEncryptedStorageBytes();
-        config.pVmMemoryBytes = mAppSearchConfig.getIsolatedStorageMemoryBytes();
-        config.icingDataUnionSizeThresholdBytes =
-                mAppSearchConfig.getIsolatedStorageIcingDataUnionSizeThresholdBytes();
-        return config;
+    private VmConfig createVmConfig() {
+        VmConfig vmConfig = new VmConfig();
+        vmConfig.encryptedStorageBytes = mAppSearchConfig.getIsolatedStorageEncryptedStorageBytes();
+        vmConfig.memoryBytes = mAppSearchConfig.getIsolatedStorageMemoryBytes();
+        return vmConfig;
     }
 
     /** Gets isolated storage backed icing instance for user. */
@@ -203,21 +223,38 @@ public final class IsolatedStorageServiceManager {
         synchronized (mIcingInstancesLocked) {
             instance = mIcingInstancesLocked.get(userHandle);
             if (instance == null) {
+                waitFor(
+                        mVmPayloadReadyLatch,
+                        PAYLOAD_READY_WAIT_TIMEOUT_SECONDS,
+                        /* target= */ "pVM payload");
+                CountDownLatch latch = new CountDownLatch(1);
                 Log.i(TAG, "getting isolated icing instance for user " + userHandle);
+                AtomicReference<IcingSearchEngine> isolatedIcingInstance = new AtomicReference<>();
                 try {
-                    instance =
-                            new IcingSearchEngine(
-                                    mIsolatedStorageServiceLocked
-                                            .get()
-                                            .getIcingSearchEngine(userHandle.getIdentifier()),
-                                    config.toIcingSearchEngineOptions(/* baseDir= */ "appsearch"),
-                                    config.getIsolatedStorageIcingDataUnionSizeThresholdBytes());
+                    mIsolatedStorageServiceLocked
+                            .get()
+                            .getIcingSearchEngine(
+                                    userHandle.getIdentifier(),
+                                    new IIcingSearchEngineCallback.Stub() {
+                                        @Override
+                                        public void onResult(IIcingSearchEngine engine) {
+                                            isolatedIcingInstance.set(
+                                                    new IcingSearchEngine(
+                                                            engine,
+                                                            config.toIcingSearchEngineOptions(
+                                                                    /* baseDir= */ "appsearch")));
+                                            latch.countDown();
+                                        }
+                                    });
                 } catch (RemoteException e) {
                     Log.e(TAG, "Unable to get icing instance for " + userHandle, e);
                     ExceptionUtil.handleRemoteException(e);
                 }
 
-                if (instance != null) {
+                waitFor(latch, LATCH_WAIT_TIMEOUT_SECONDS, /* target= */ "icing instance");
+
+                if (isolatedIcingInstance.get() != null) {
+                    instance = isolatedIcingInstance.get();
                     mIcingInstancesLocked.put(userHandle, instance);
                 }
             }
@@ -225,40 +262,23 @@ public final class IsolatedStorageServiceManager {
         return instance;
     }
 
-    /** A connection to the isolated storage service. */
-    private class IsolatedStorageServiceConnection implements ServiceConnection {
-        private final CompletableFuture<Void> mFuture;
+    private static void waitFor(
+            @NonNull CountDownLatch latch, long timeoutSeconds, @NonNull String target) {
+        Objects.requireNonNull(latch);
+        Objects.requireNonNull(target);
 
-        IsolatedStorageServiceConnection(@NonNull CompletableFuture<Void> future) {
-            mFuture = Objects.requireNonNull(future);
-        }
-
-        @Override
-        public void onServiceConnected(ComponentName className, IBinder service) {
-            mIsolatedStorageServiceLocked.set(IIsolatedStorageService.Stub.asInterface(service));
-            Log.i(TAG, "IsolatedStorageService connected");
-            mFuture.complete(null);
-        }
-
-        @Override
-        public void onServiceDisconnected(ComponentName className) {
-            Log.i(TAG, "IsolatedStorageService disconnected");
-            mIsolatedStorageServiceLocked.set(null);
-            mFuture.cancel(/* mayInterruptIfRunning= */ true);
-        }
-
-        @Override
-        public void onBindingDied(ComponentName className) {
-            Log.i(TAG, "IsolatedStorageService binding died");
-            mIsolatedStorageServiceLocked.set(null);
-            mFuture.cancel(/* mayInterruptIfRunning= */ true);
-        }
-
-        @Override
-        public void onNullBinding(ComponentName className) {
-            Log.i(TAG, "IsolatedStorageService null binding");
-            mIsolatedStorageServiceLocked.set(null);
-            mFuture.cancel(/* mayInterruptIfRunning= */ true);
+        try {
+            if (!latch.await(timeoutSeconds, TimeUnit.SECONDS)) {
+                Log.e(
+                        TAG,
+                        "Timed out after waiting for "
+                                + target
+                                + " for "
+                                + timeoutSeconds
+                                + " seconds");
+            }
+        } catch (InterruptedException e) {
+            ExceptionUtil.handleException(e);
         }
     }
 }

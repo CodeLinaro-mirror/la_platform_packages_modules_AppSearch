@@ -28,7 +28,6 @@ import android.app.appsearch.AppSearchManager;
 import android.app.appsearch.AppSearchResult;
 import android.app.appsearch.AppSearchSchema;
 import android.app.appsearch.GenericDocument;
-import android.app.appsearch.JoinSpec;
 import android.app.appsearch.PackageIdentifier;
 import android.app.appsearch.PutDocumentsRequest;
 import android.app.appsearch.RemoveByDocumentIdRequest;
@@ -43,7 +42,6 @@ import android.util.ArraySet;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionDocument;
 import com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionStaticMetadata;
 import com.android.server.appsearch.appsindexer.appsearchtypes.AppOpenEvent;
 import com.android.server.appsearch.appsindexer.appsearchtypes.MobileApplication;
@@ -427,7 +425,7 @@ public class AppSearchHelper implements Closeable {
             GenericDocument appFunction = indexedAppFunctions.get(i);
             String id = appFunction.getId();
             String packageName =
-                    appFunction.getPropertyString(AppFunctionDocument.PROPERTY_PACKAGE_NAME);
+                    appFunction.getPropertyString(AppFunctionStaticMetadata.PROPERTY_PACKAGE_NAME);
             if (packagesToReindex.contains(packageName) && !currentAppFunctionIds.contains(id)) {
                 appFunctionIdsToRemove.add(id);
             }
@@ -506,8 +504,8 @@ public class AppSearchHelper implements Closeable {
      * doesn't necessarily have to happen in the current sync.
      *
      * @param apps a list of {@link MobileApplication} documents to be inserted.
-     * @param currentAppFunctionDocuments a list of {@link AppFunctionDocument} documents to be
-     *     indexed.
+     * @param currentAppFunctions a list of {@link AppFunctionStaticMetadata} documents to be
+     *     AppFunctionStaticMetadata should point to its corresponding MobileApplication.
      * @throws AppSearchException if indexing results in a {@link
      *     AppSearchResult#RESULT_OUT_OF_SPACE} result code. It will also throw this if the put call
      *     results in a system error as in {@link BatchResultCallback#onSystemError}. This may
@@ -522,16 +520,16 @@ public class AppSearchHelper implements Closeable {
     @WorkerThread
     public AppSearchBatchResult<String, Void> indexApps(
             @NonNull List<MobileApplication> apps,
-            @NonNull List<AppFunctionDocument> currentAppFunctionDocuments)
+            @NonNull List<AppFunctionStaticMetadata> currentAppFunctions)
             throws AppSearchException {
         Objects.requireNonNull(apps);
-        Objects.requireNonNull(currentAppFunctionDocuments);
+        Objects.requireNonNull(currentAppFunctions);
 
         // Insert all the documents. At this point, the proper schemas should've been set.
         PutDocumentsRequest request =
                 new PutDocumentsRequest.Builder()
                         .addGenericDocuments(apps)
-                        .addGenericDocuments(currentAppFunctionDocuments)
+                        .addGenericDocuments(currentAppFunctions)
                         .build();
 
         AppSearchBatchResult<String, Void> result = mSyncAppSearchAppsDbSession.put(request);
@@ -563,53 +561,43 @@ public class AppSearchHelper implements Closeable {
     }
 
     /**
-     * Returns a mapping of packages to a mapping of document ids to {@link AppFunctionDocument}
-     * objects in {@link AppFunctionStaticMetadata#APP_FUNCTION_NAMESPACE}. This is useful for
-     * determining what has changed during an update.
+     * Returns a mapping of packages to a mapping of function ids to {@link
+     * AppFunctionStaticMetadata} objects. This is useful for determining what has changed during an
+     * update.
      *
      * @param appPackageIds a set of package ids for which to retrieve functions from AppSearch.
      */
     @NonNull
     @WorkerThread
-    public Map<String, Map<String, AppFunctionDocument>> getAppFunctionDocumentsFromAppSearch(
-            Set<String> appPackageIds) throws AppSearchException {
-        SearchSpec allAppFunctionsSpec =
+    public Map<String, Map<String, AppFunctionStaticMetadata>> getAppFunctionsFromAppSearch(
+            List<String> appPackageIds) throws AppSearchException {
+        SearchSpec.Builder allAppFunctionsSpec =
                 new SearchSpec.Builder()
                         .addFilterNamespaces(AppFunctionStaticMetadata.APP_FUNCTION_NAMESPACE)
-                        .build();
+                        .setResultCountPerPage(GET_APP_IDS_PAGE_SIZE);
 
-        JoinSpec appFunctionJoinSpec =
-                new JoinSpec.Builder(AppFunctionDocument.PROPERTY_MOBILE_APPLICATION_QUALIFIED_ID)
-                        .setNestedSearch("", allAppFunctionsSpec)
-                        .build();
-
-        SearchSpec mobileApplicationSearchSpec =
-                new SearchSpec.Builder()
-                        .addFilterNamespaces(MobileApplication.APPS_NAMESPACE)
-                        .addProjection(
-                                SearchSpec.SCHEMA_TYPE_WILDCARD,
-                                List.of(MobileApplication.APP_PROPERTY_PACKAGE_NAME))
-                        .setJoinSpec(appFunctionJoinSpec)
-                        .build();
+        for (int i = 0; i < appPackageIds.size(); i++) {
+            String appPackageId = appPackageIds.get(i);
+            allAppFunctionsSpec.addFilterSchemas(
+                    AppFunctionStaticMetadata.getSchemaNameForPackage(
+                            appPackageId, /* schemaType= */ null));
+        }
 
         SyncSearchResults results =
-                mSyncAppSearchAppsDbSession.search("", mobileApplicationSearchSpec);
+                mSyncAppSearchAppsDbSession.search("", allAppFunctionsSpec.build());
 
-        return collectAppFunctionDocumentsFromAllPages(results, new ArraySet<>(appPackageIds));
+        return collectAppFunctionDocumentsFromAllPages(results);
     }
 
     /**
-     * Iterates through result pages and returns a mapping of package names to a mapping of document
-     * ids to the corresponding app function documents currently indexed into AppSearch.
-     *
-     * @param results results from a search query to retrieve all the app function documents.
-     * @param appPackageIds a set of package ids for which to retrieve functions from AppSearch.
+     * Iterates through result pages and returns a mapping of package names to a mapping of function
+     * ids to the corresponding app function currently indexed into AppSearch.
      */
     @NonNull
     @WorkerThread
-    private Map<String, Map<String, AppFunctionDocument>> collectAppFunctionDocumentsFromAllPages(
-            @NonNull SyncSearchResults results, Set<String> appPackageIds) {
-        Map<String, Map<String, AppFunctionDocument>> appFunctionDocumentsMap = new ArrayMap<>();
+    private Map<String, Map<String, AppFunctionStaticMetadata>>
+            collectAppFunctionDocumentsFromAllPages(@NonNull SyncSearchResults results) {
+        Map<String, Map<String, AppFunctionStaticMetadata>> appFunctionsMap = new ArrayMap<>();
         // TODO(b/357551503): If possible, use pagination instead of building a map containing all
         // function docs.
         try {
@@ -619,28 +607,25 @@ public class AppSearchHelper implements Closeable {
                     GenericDocument genericDocument = resultList.get(i).getGenericDocument();
                     String packageName =
                             genericDocument.getPropertyString(
-                                    MobileApplication.APP_PROPERTY_PACKAGE_NAME);
-                    List<SearchResult> joinedResultList = resultList.get(i).getJoinedResults();
-                    if (!appPackageIds.contains(packageName) || joinedResultList.isEmpty()) {
-                        continue;
-                    }
+                                    AppFunctionStaticMetadata.PROPERTY_PACKAGE_NAME);
 
-                    Map<String, AppFunctionDocument> functionDocumentsForPackage =
-                            appFunctionDocumentsMap.computeIfAbsent(
-                                    packageName, k -> new ArrayMap<>());
-                    for (int j = 0; j < joinedResultList.size(); j++) {
-                        AppFunctionDocument functionDocument =
-                                new AppFunctionDocument(
-                                        joinedResultList.get(j).getGenericDocument());
-                        functionDocumentsForPackage.put(functionDocument.getId(), functionDocument);
+                    Map<String, AppFunctionStaticMetadata> functionsForPackage =
+                            appFunctionsMap.get(packageName);
+                    if (functionsForPackage == null) {
+                        functionsForPackage = new ArrayMap<>();
+                        appFunctionsMap.put(packageName, functionsForPackage);
                     }
+                    functionsForPackage.put(
+                            genericDocument.getPropertyString(
+                                    AppFunctionStaticMetadata.PROPERTY_FUNCTION_ID),
+                            new AppFunctionStaticMetadata(genericDocument));
                 }
                 resultList = results.getNextPage();
             }
         } catch (AppSearchException e) {
             Log.e(TAG, "Error while searching for all app documents", e);
         }
-        return appFunctionDocumentsMap;
+        return appFunctionsMap;
     }
 
     /**
@@ -771,7 +756,7 @@ public class AppSearchHelper implements Closeable {
                         .addProjection(
                                 SearchSpec.SCHEMA_TYPE_WILDCARD,
                                 Collections.singletonList(
-                                        AppFunctionDocument.PROPERTY_PACKAGE_NAME))
+                                        AppFunctionStaticMetadata.PROPERTY_PACKAGE_NAME))
                         .addFilterPackageNames(mContext.getPackageName())
                         .setResultCountPerPage(GET_APP_IDS_PAGE_SIZE)
                         .build();
@@ -813,7 +798,8 @@ public class AppSearchHelper implements Closeable {
                     SearchResult result = resultList.get(i);
                     packages.add(
                             result.getGenericDocument()
-                                    .getPropertyString(AppFunctionDocument.PROPERTY_PACKAGE_NAME));
+                                    .getPropertyString(
+                                            AppFunctionStaticMetadata.PROPERTY_PACKAGE_NAME));
                 }
 
                 resultList = results.getNextPage();

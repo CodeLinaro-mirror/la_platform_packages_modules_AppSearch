@@ -201,7 +201,7 @@ public abstract class RevocableFileDescriptorStore {
             throws IOException {
         synchronized (mLock) {
             Map<AppSearchBlobHandle, AppSearchRevocableFileDescriptor> rfdsForWrite =
-                    mSentRevocableFileDescriptorsForWriteLocked.get(packageName);
+                    mSentRevocableFileDescriptorsForWriteLocked.remove(packageName);
             if (rfdsForWrite == null) {
                 return;
             }

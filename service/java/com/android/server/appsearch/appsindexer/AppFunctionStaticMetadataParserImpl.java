@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 The Android Open Source Project
+ * Copyright (C) 2024 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,19 +15,23 @@
  */
 package com.android.server.appsearch.appsindexer;
 
+import static com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionStaticMetadata.PROPERTY_MOBILE_APPLICATION_QUALIFIED_ID;
+import static com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionStaticMetadata.PROPERTY_PACKAGE_NAME;
+
 import android.annotation.NonNull;
 import android.app.appsearch.AppSearchSchema;
 import android.app.appsearch.AppSearchSchema.DocumentPropertyConfig;
 import android.app.appsearch.AppSearchSchema.PropertyConfig;
 import android.app.appsearch.GenericDocument;
+import android.app.appsearch.util.DocumentIdUtil;
 import android.app.appsearch.util.LogUtil;
 import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.util.ArrayMap;
 import android.util.Log;
 
-import com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionDocument;
 import com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionStaticMetadata;
+import com.android.server.appsearch.appsindexer.appsearchtypes.MobileApplication;
 import com.android.server.appsearch.external.localstorage.converter.GenericDocumentToProtoConverter;
 
 import org.xmlpull.v1.XmlPullParser;
@@ -46,7 +50,7 @@ import java.util.Objects;
  * This class parses static metadata about App Functions from an XML file located within an app's
  * assets.
  */
-public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser {
+public class AppFunctionStaticMetadataParserImpl implements AppFunctionStaticMetadataParser {
     private static final String TAG = "AppSearchMetadataParser";
     private static final String XML_TAG_APPFUNCTION = "appfunction";
     private static final String XML_TAG_APPFUNCTIONS_ROOT = "appfunctions";
@@ -67,7 +71,7 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
      *     same as the package running the apps indexer.
      * @param config the app indexer config used to enforce various limits during parsing.
      */
-    public AppFunctionDocumentParserImpl(
+    public AppFunctionStaticMetadataParserImpl(
             @NonNull String indexerPackageName, AppsIndexerConfig config) {
         mIndexerPackageName = Objects.requireNonNull(indexerPackageName);
         mMaxAppFunctions = config.getMaxAppFunctionsPerPackage();
@@ -196,7 +200,7 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
             String tagName = parser.getName();
             if (eventType == XmlPullParser.START_TAG && XML_TAG_APPFUNCTION.equals(tagName)) {
                 AppFunctionStaticMetadata appFunction = parseAppFunction(parser, packageName);
-                appFunctions.put(appFunction.getId(), appFunction);
+                appFunctions.put(appFunction.getFunctionId(), appFunction);
                 if (appFunctions.size() >= mMaxAppFunctions) {
                     Log.d(TAG, "Exceeding the max number of app functions: " + packageName);
                     return appFunctions;
@@ -288,7 +292,7 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
 
     @NonNull
     @Override
-    public Map<String, AppFunctionDocument> parseIntoMapForGivenSchemas(
+    public Map<String, AppFunctionStaticMetadata> parseIntoMapForGivenSchemas(
             @NonNull PackageManager packageManager,
             @NonNull String packageName,
             @NonNull String assetFilePath,
@@ -317,7 +321,7 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
     }
 
     @NonNull
-    private Map<String, AppFunctionDocument> parseAppFunctionsIntoMapForGivenSchemas(
+    private Map<String, AppFunctionStaticMetadata> parseAppFunctionsIntoMapForGivenSchemas(
             @NonNull XmlPullParser parser,
             @NonNull String packageName,
             @NonNull Map<String, AppSearchSchema> schemas)
@@ -326,7 +330,7 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
         Objects.requireNonNull(packageName);
         Objects.requireNonNull(schemas);
 
-        Map<String, AppFunctionDocument> appFnMetadatas = new ArrayMap<>();
+        Map<String, AppFunctionStaticMetadata> appFnMetadatas = new ArrayMap<>();
 
         Map<String, PropertyConfig> qualifiedPropertyNamesToPropertyConfig =
                 buildQualifiedPropertyNameToPropertyConfigMap(schemas);
@@ -341,26 +345,35 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
                     XML_TAG_APPFUNCTION.equals(tagName)
                             ? AppFunctionStaticMetadata.SCHEMA_TYPE
                             : tagName;
-            String schemaNameForPackage =
-                    AppFunctionDocument.getSchemaNameForPackage(packageName, schemaType);
-            if (eventType == XmlPullParser.START_TAG && schemas.containsKey(schemaNameForPackage)) {
-                // Id of the document will be set after parsing the value from xml.
-                AppFunctionDocument.Builder appFnDocBuilder =
-                        new AppFunctionDocument.Builder(
-                                packageName, "", mIndexerPackageName, schemaType);
-                buildGenericDocumentFromXmlElement(
-                        parser,
-                        packageName,
-                        schemaNameForPackage,
-                        qualifiedPropertyNamesToPropertyConfig,
-                        appFnDocBuilder);
-
-                AppFunctionDocument appFunctionDocument = appFnDocBuilder.build();
+            String schemaName =
+                    AppFunctionStaticMetadata.getSchemaNameForPackage(packageName, schemaType);
+            if (eventType == XmlPullParser.START_TAG && schemas.containsKey(schemaName)) {
+                GenericDocument.Builder appFnMetadataBuilder =
+                        parseXmlElementToGenericDocument(
+                                parser,
+                                packageName,
+                                schemaType,
+                                qualifiedPropertyNamesToPropertyConfig);
+                // Populate package based properties.
+                appFnMetadataBuilder
+                        .setPropertyString(PROPERTY_PACKAGE_NAME, packageName)
+                        .setPropertyString(
+                                PROPERTY_MOBILE_APPLICATION_QUALIFIED_ID,
+                                DocumentIdUtil.createQualifiedId(
+                                        mIndexerPackageName,
+                                        AppSearchHelper.APP_DATABASE,
+                                        MobileApplication.APPS_NAMESPACE,
+                                        packageName))
+                        .build();
+                GenericDocument appFnMetadata = appFnMetadataBuilder.build();
                 // Skip docs exceeding max size.
-                if (!validateDocumentSize(appFunctionDocument)) {
+                if (!validateDocumentSize(appFnMetadata)) {
                     continue;
                 }
-                appFnMetadatas.put(appFunctionDocument.getId(), appFunctionDocument);
+                appFnMetadatas.put(
+                        appFnMetadata.getPropertyString(
+                                AppFunctionStaticMetadata.PROPERTY_FUNCTION_ID),
+                        new AppFunctionStaticMetadata(appFnMetadata));
                 if (appFnMetadatas.size() >= mMaxAppFunctions) {
                     if (LogUtil.DEBUG) {
                         Log.d(TAG, "Exceeding the max number of app functions: " + packageName);
@@ -374,28 +387,35 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
     }
 
     /**
-     * Tries to parse a single XML element and populate the {@link GenericDocument.Builder} object
-     * recursively.
+     * Tries to parse a single XML element into a {@link GenericDocument} object.
      *
      * @param parser the XmlPullParser positioned at the start of an XML element.
      * @param packageName the package name of the app that owns the XML element.
      * @param schemaType the type of the schema that the XML element belongs to.
      * @param qualifiedPropertyNamesToPropertyConfig the mapping of qualified property names to
      *     their corresponding {@link PropertyConfig} objects.
-     * @param docBuilder {@link GenericDocument.Builder} object to populate with the data from the
-     *     XML element.
+     * @return a {@link GenericDocument.Builder} object populated with the data from the XML
+     *     element, or null.
      * @throws XmlPullParserException if the XML element is malformed.
      */
-    private static void buildGenericDocumentFromXmlElement(
+    @NonNull
+    private static GenericDocument.Builder parseXmlElementToGenericDocument(
             @NonNull XmlPullParser parser,
             @NonNull String packageName,
             @NonNull String schemaType,
-            @NonNull Map<String, PropertyConfig> qualifiedPropertyNamesToPropertyConfig,
-            @NonNull GenericDocument.Builder docBuilder)
+            @NonNull Map<String, PropertyConfig> qualifiedPropertyNamesToPropertyConfig)
             throws XmlPullParserException, IOException {
         Objects.requireNonNull(parser);
         Objects.requireNonNull(packageName);
+        Objects.requireNonNull(schemaType);
         Objects.requireNonNull(qualifiedPropertyNamesToPropertyConfig);
+
+        // Id of the document will be set after parsing the value.
+        GenericDocument.Builder docBuilder =
+                new GenericDocument.Builder(
+                        AppFunctionStaticMetadata.APP_FUNCTION_NAMESPACE,
+                        "",
+                        AppFunctionStaticMetadata.getSchemaNameForPackage(packageName, schemaType));
 
         Map<String, List<String>> primitivePropertyValues = new ArrayMap<>();
         Map<String, List<GenericDocument>> nestedDocumentValues = new ArrayMap<>();
@@ -413,19 +433,14 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
                     PropertyConfig propertyConfig =
                             qualifiedPropertyNamesToPropertyConfig.get(currentPropertyPath);
                     if (propertyConfig instanceof DocumentPropertyConfig) {
-                        String nestedSchemaType =
-                                ((DocumentPropertyConfig) propertyConfig).getSchemaType();
                         GenericDocument.Builder nestedDoc =
-                                new GenericDocument.Builder(
-                                        AppFunctionStaticMetadata.APP_FUNCTION_NAMESPACE,
-                                        "",
-                                        nestedSchemaType);
-                        buildGenericDocumentFromXmlElement(
-                                parser,
-                                packageName,
-                                nestedSchemaType,
-                                qualifiedPropertyNamesToPropertyConfig,
-                                nestedDoc);
+                                parseXmlElementToGenericDocument(
+                                        parser,
+                                        packageName,
+                                        getSchemaTypeWithoutPackage(
+                                                ((DocumentPropertyConfig) propertyConfig)
+                                                        .getSchemaType()),
+                                        qualifiedPropertyNamesToPropertyConfig);
                         nestedDocumentValues
                                 .computeIfAbsent(currentPropertyPath, k -> new ArrayList<>())
                                 .add(nestedDoc.build());
@@ -436,7 +451,7 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
                     } else if (parser.getName().equals(XML_TAG_ID)) {
                         String id = parser.nextText().trim();
                         if (!id.isEmpty()) {
-                            docBuilder.setId(packageName + "/" + id);
+                            docBuilder.setId(id);
                             wasDocIdSet = true;
                         }
                     }
@@ -464,7 +479,7 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
                             throw new XmlPullParserException(
                                     "No id found for document of type: " + schemaType);
                         }
-                        return;
+                        return docBuilder;
                     }
                     break;
             }
@@ -496,7 +511,7 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
         Map<String, PropertyConfig> propertyMap = new ArrayMap<>();
 
         for (Map.Entry<String, AppSearchSchema> entry : schemaMap.entrySet()) {
-            String schemaType = entry.getKey();
+            String schemaType = getSchemaTypeWithoutPackage(entry.getKey());
             AppSearchSchema schema = entry.getValue();
 
             List<AppSearchSchema.PropertyConfig> properties = schema.getProperties();
@@ -555,6 +570,17 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
     private static String createQualifiedPropertyName(
             @NonNull String schemaType, @NonNull String propertyName) {
         return Objects.requireNonNull(schemaType) + "#" + Objects.requireNonNull(propertyName);
+    }
+
+    /**
+     * Returns the schema type without the package name suffix.
+     *
+     * <p>For example, if the schema name is "Person-com.example.app", this method will return
+     * "Person".
+     */
+    @NonNull
+    private static String getSchemaTypeWithoutPackage(@NonNull String schemaName) {
+        return Objects.requireNonNull(schemaName).substring(0, schemaName.indexOf('-'));
     }
 
     /**

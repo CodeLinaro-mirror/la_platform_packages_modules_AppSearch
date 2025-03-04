@@ -58,6 +58,15 @@ public class AppFunctionStaticMetadataTest {
     }
 
     @Test
+    public void testSchemaName() {
+        String packageName = "com.example.message";
+        String schemaName =
+                AppFunctionStaticMetadata.getSchemaNameForPackage(
+                        packageName, /** schemaType= */ null);
+        assertThat(schemaName).isEqualTo("AppFunctionStaticMetadata-com.example.message");
+    }
+
+    @Test
     public void testChildSchema() {
         AppSearchSchema appSearchSchema =
                 AppFunctionStaticMetadata.createAppFunctionSchemaForPackage("com.xyz");

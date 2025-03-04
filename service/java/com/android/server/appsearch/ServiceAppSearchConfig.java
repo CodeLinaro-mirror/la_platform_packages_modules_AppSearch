@@ -22,10 +22,6 @@ import com.android.appsearch.flags.Flags;
 import com.android.server.appsearch.external.localstorage.AppSearchConfig;
 import com.android.server.appsearch.isolated_storage_service.IsolatedStorageServiceManager;
 
-import com.google.android.icing.proto.PersistType;
-
-import org.jspecify.annotations.NonNull;
-
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -222,12 +218,12 @@ public interface ServiceAppSearchConfig extends AppSearchConfig, AutoCloseable {
     }
 
     /**
-     * The threshold to decide whether to use {@link android.os.SharedMemory SharedMemory} for icing
-     * data passing between the isolated storage service and AppSearch.
+     * Closes this {@link AppSearchConfig}.
+     *
+     * <p>This close() operation does not throw an exception.
      */
-    default long getIsolatedStorageIcingDataUnionSizeThresholdBytes() {
-        return IsolatedStorageServiceManager.DEFAULT_ICING_DATA_UNION_SIZE_THRESHOLD_BYTES;
-    }
+    @Override
+    void close();
 
     /**
      * Default min time interval between consecutive optimize calls in millis if there is no value
@@ -238,22 +234,4 @@ public interface ServiceAppSearchConfig extends AppSearchConfig, AutoCloseable {
                 ? DEFAULT_FOUR_HOUR_MIN_TIME_OPTIMIZE_THRESHOLD_MILLIS
                 : DEFAULT_MIN_TIME_OPTIMIZE_THRESHOLD_MILLIS;
     }
-
-    /**
-     * Default {@code PersistType.Code} that should be used to persist common mutations such as
-     * PUTs or DELETEs.
-     */
-    default PersistType.@NonNull Code defaultLightweightPersistType() {
-        return Flags.enableRecoveryProofPersistence()
-                ? PersistType.Code.RECOVERY_PROOF
-                : PersistType.Code.LITE;
-    }
-
-    /**
-     * Closes this {@link AppSearchConfig}.
-     *
-     * <p>This close() operation does not throw an exception.
-     */
-    @Override
-    void close();
 }

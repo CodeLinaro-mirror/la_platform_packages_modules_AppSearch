@@ -35,7 +35,6 @@ import android.util.Pair;
 
 import com.android.appsearch.flags.Flags;
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionDocument;
 import com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionStaticMetadata;
 import com.android.server.appsearch.appsindexer.appsearchtypes.MobileApplication;
 
@@ -107,7 +106,7 @@ public final class AppsIndexerImpl implements Closeable {
         appsUpdateStats.mPackageManagerLatencyMillis =
                 SystemClock.elapsedRealtime() - beforePackageManagerTimestamp;
 
-        List<AppFunctionDocument> functionDocumentsToAddOrUpdate = new ArrayList<>();
+        List<AppFunctionStaticMetadata> functionsToAddOrUpdate = new ArrayList<>();
         // To remove, we only need the id
         Set<String> functionIdsToRemove = new ArraySet<>();
 
@@ -130,7 +129,7 @@ public final class AppsIndexerImpl implements Closeable {
         // for removed packages, as we can just remove the entire MobileApplication +
         // AppFunctionStaticMetadata schemas, which will in turn remove the documents.
         Map<PackageInfo, ResolveInfos> packagesToBeAddedOrUpdated = new ArrayMap<>();
-        Set<String> updatedPackageIds = new ArraySet<>();
+        List<String> updatedPackageIds = new ArrayList<>();
 
         // First loop, determine the status of apps
         for (Map.Entry<PackageInfo, ResolveInfos> packageEntry : packagesToIndex.entrySet()) {
@@ -185,9 +184,9 @@ public final class AppsIndexerImpl implements Closeable {
         }
 
         // Parse and build all necessary AppFunctionStaticMetadata from PackageManager.
-        Map<String, Map<String, ? extends AppFunctionDocument>>
+        Map<String, Map<String, AppFunctionStaticMetadata>>
                 currentAppFunctionsForAddedUpdatedPackages =
-                        AppsUtil.buildAppFunctionDocumentsIntoMap(
+                        AppsUtil.buildAppFunctionStaticMetadataIntoMap(
                                 packageManager,
                                 packagesToBeAddedOrUpdated,
                                 /* indexerPackageName= */ mContext.getPackageName(),
@@ -195,22 +194,22 @@ public final class AppsIndexerImpl implements Closeable {
                                 dynamicAppFunctionSchemasForPackages);
 
         // Get all currently indexed AppFunctionStaticMetadata docs for the necessary packages.
-        Map<String, Map<String, AppFunctionDocument>> appFunctionsFromAppSearch =
-                mAppSearchHelper.getAppFunctionDocumentsFromAppSearch(updatedPackageIds);
+        Map<String, Map<String, AppFunctionStaticMetadata>> appFunctionsFromAppSearch =
+                mAppSearchHelper.getAppFunctionsFromAppSearch(updatedPackageIds);
 
-        for (Map.Entry<String, Map<String, ? extends AppFunctionDocument>> packageEntry :
+        for (Map.Entry<String, Map<String, AppFunctionStaticMetadata>> packageEntry :
                 currentAppFunctionsForAddedUpdatedPackages.entrySet()) {
             String packageName = packageEntry.getKey();
-            Map<String, ? extends AppFunctionDocument> currentAppFunctionsPerApp =
+            Map<String, AppFunctionStaticMetadata> currentAppFunctionsPerApp =
                     packageEntry.getValue();
 
             // This might be null, in the case of functions newly added to a package
-            Map<String, AppFunctionDocument> appSearchAppFunctionsPerApp =
+            Map<String, AppFunctionStaticMetadata> appSearchAppFunctionsPerApp =
                     appFunctionsFromAppSearch.get(packageName);
 
             if (appSearchAppFunctionsPerApp == null && !currentAppFunctionsPerApp.isEmpty()) {
                 // Functions added to an app that didn't have them
-                functionDocumentsToAddOrUpdate.addAll(currentAppFunctionsPerApp.values());
+                functionsToAddOrUpdate.addAll(currentAppFunctionsPerApp.values());
                 addedOrRemovedFlag = true;
             }
 
@@ -220,10 +219,10 @@ public final class AppsIndexerImpl implements Closeable {
                     addedOrRemovedFlag = true;
                 } else {
                     // App updated that had packages, we should check
-                    comparePackageFunctionDocuments(
+                    comparePackageFunctions(
                             currentAppFunctionsPerApp,
                             appSearchAppFunctionsPerApp,
-                            functionDocumentsToAddOrUpdate,
+                            functionsToAddOrUpdate,
                             functionIdsToRemove);
                 }
             }
@@ -267,16 +266,14 @@ public final class AppsIndexerImpl implements Closeable {
                         SystemClock.elapsedRealtime() - beforeSetSchemaTimestamp;
             }
 
-            if (!packagesToBeAddedOrUpdated.isEmpty()
-                    || !functionDocumentsToAddOrUpdate.isEmpty()) {
+            if (!packagesToBeAddedOrUpdated.isEmpty() || !functionsToAddOrUpdate.isEmpty()) {
                 long beforePutTimestamp = SystemClock.elapsedRealtime();
                 List<MobileApplication> mobileApplications =
                         AppsUtil.buildAppsFromPackageInfos(
                                 packageManager, packagesToBeAddedOrUpdated);
 
                 AppSearchBatchResult<String, Void> result =
-                        mAppSearchHelper.indexApps(
-                                mobileApplications, functionDocumentsToAddOrUpdate);
+                        mAppSearchHelper.indexApps(mobileApplications, functionsToAddOrUpdate);
                 if (result.isSuccess()) {
                     appsUpdateStats.mUpdateStatusCodes.add(AppSearchResult.RESULT_OK);
                 } else {
@@ -327,7 +324,7 @@ public final class AppsIndexerImpl implements Closeable {
      */
     private Pair<List<PackageIdentifier>, List<PackageIdentifier>> getPackageIdentifiers(
             @NonNull Map<PackageInfo, ResolveInfos> packagesToIndex,
-            Map<String, Map<String, ? extends AppFunctionDocument>>
+            Map<String, Map<String, AppFunctionStaticMetadata>>
                     currentAppFunctionsForAddedUpdatedPackages) {
         List<PackageIdentifier> packageIdentifiers = new ArrayList<>();
         List<PackageIdentifier> packageIdentifiersWithAppFunctions = new ArrayList<>();
@@ -360,68 +357,65 @@ public final class AppsIndexerImpl implements Closeable {
     }
 
     /**
-     * Compares the app function documents in PackageManager vs those in AppSearch, and updates
-     * functionDocumentsToAddOrUpdate and functionDocumentIdsToRemove accordingly.
+     * Compares the app functions in PackageManager vs those in AppSearch, and updates
+     * functionsToAddOrUpdate and functionIdsToRemove accordingly.
      *
-     * @param currentAppFunctionDocumentsPerApp the mapping of function ids to documents
-     *     corresponding to what is in the apps metadata.
-     * @param appSearchAppFunctionDocumentsPerApp the mapping of function ids to documents
-     *     corresponding to what is in AppSearch
-     * @param functionDocumentsToAddOrUpdate the List of {@link AppFunctionDocument} that will be
-     *     sent to a put call to AppSearch
-     * @param functionDocumentIdsToRemove the set of ids that will be sent to a remove call in
-     *     AppSearch
+     * @param currentAppFunctionsPerApp the mapping of function ids to documents corresponding to
+     *     what is in the apps metadata.
+     * @param appSearchAppFunctionsPerApp the mapping of function ids to documents corresponding to
+     *     what is in AppSearch
+     * @param functionsToAddOrUpdate the List of {@link GenericDocument} that will be sent to a put
+     *     call to AppSearch
+     * @param functionIdsToRemove the set of ids that will be sent to a remove call in AppSearch
      */
-    private void comparePackageFunctionDocuments(
-            @NonNull Map<String, ? extends AppFunctionDocument> currentAppFunctionDocumentsPerApp,
-            @NonNull Map<String, AppFunctionDocument> appSearchAppFunctionDocumentsPerApp,
-            @NonNull List<AppFunctionDocument> functionDocumentsToAddOrUpdate,
-            @NonNull Set<String> functionDocumentIdsToRemove) {
-        Objects.requireNonNull(currentAppFunctionDocumentsPerApp);
-        Objects.requireNonNull(appSearchAppFunctionDocumentsPerApp);
-        Objects.requireNonNull(functionDocumentsToAddOrUpdate);
-        Objects.requireNonNull(functionDocumentIdsToRemove);
+    private void comparePackageFunctions(
+            @NonNull Map<String, AppFunctionStaticMetadata> currentAppFunctionsPerApp,
+            @NonNull Map<String, AppFunctionStaticMetadata> appSearchAppFunctionsPerApp,
+            @NonNull List<AppFunctionStaticMetadata> functionsToAddOrUpdate,
+            @NonNull Set<String> functionIdsToRemove) {
+        Objects.requireNonNull(currentAppFunctionsPerApp);
+        Objects.requireNonNull(appSearchAppFunctionsPerApp);
+        Objects.requireNonNull(functionsToAddOrUpdate);
+        Objects.requireNonNull(functionIdsToRemove);
 
-        for (Map.Entry<String, ? extends AppFunctionDocument> currentFunctionEntry :
-                currentAppFunctionDocumentsPerApp.entrySet()) {
+        for (Map.Entry<String, AppFunctionStaticMetadata> currentFunctionEntry :
+                currentAppFunctionsPerApp.entrySet()) {
             String functionId = currentFunctionEntry.getKey();
-            AppFunctionDocument currentFunctionDocument = currentFunctionEntry.getValue();
-            AppFunctionDocument appSearchFunctionDocument =
-                    appSearchAppFunctionDocumentsPerApp.get(functionId);
-            // appSearchFunctionDocument == null means it's a new document, document inequality
-            // means
-            // updated document. Both mean we need to call put with this document.
-            if (appSearchFunctionDocument == null
-                    || !areFunctionDocumentsEqual(
-                            appSearchFunctionDocument, currentFunctionDocument)) {
-                functionDocumentsToAddOrUpdate.add(currentFunctionDocument);
+            AppFunctionStaticMetadata currentFunction = currentFunctionEntry.getValue();
+            AppFunctionStaticMetadata appSearchFunction =
+                    appSearchAppFunctionsPerApp.get(functionId);
+            // appSearchFunction == null means it's a new function, function inequality means
+            // updated function. Both mean we need to call put with this function.
+            if (appSearchFunction == null
+                    || !areFunctionsEqual(appSearchFunction, currentFunction)) {
+                functionsToAddOrUpdate.add(currentFunction);
             }
         }
 
-        for (Map.Entry<String, AppFunctionDocument> appSearchFunctionEntry :
-                appSearchAppFunctionDocumentsPerApp.entrySet()) {
-            if (!currentAppFunctionDocumentsPerApp.containsKey(appSearchFunctionEntry.getKey())) {
-                functionDocumentIdsToRemove.add(appSearchFunctionEntry.getValue().getId());
+        for (Map.Entry<String, AppFunctionStaticMetadata> appSearchFunctionEntry :
+                appSearchAppFunctionsPerApp.entrySet()) {
+            if (!currentAppFunctionsPerApp.containsKey(appSearchFunctionEntry.getKey())) {
+                functionIdsToRemove.add(appSearchFunctionEntry.getValue().getId());
             }
         }
     }
 
     /**
-     * Checks if two AppFunction documents are equal. It isn't enough to call equals. We also need
-     * to ignore creation timestamp and parent types. These are set in AppSearch, but aren't set for
-     * the "about to be indexed" docs
+     * Checks if two AppFunctionMetaData documents are equal. It isn't enough to call equals. We
+     * also need to ignore creation timestamp and parent types. These are set in AppSearch, but
+     * aren't set for the "about to be indexed" docs
      *
      * @return true if the documents are equal, false otherwise.
      */
-    private boolean areFunctionDocumentsEqual(
-            @NonNull GenericDocument document1, @NonNull GenericDocument document2) {
-        Objects.requireNonNull(document1);
-        Objects.requireNonNull(document2);
+    private boolean areFunctionsEqual(
+            @NonNull GenericDocument appSearchFunction, @NonNull GenericDocument currentFunction) {
+        Objects.requireNonNull(appSearchFunction);
+        Objects.requireNonNull(currentFunction);
 
-        document1 = clearTimestampsAndParentTypesInDocument(document1);
-        document2 = clearTimestampsAndParentTypesInDocument(document2);
+        appSearchFunction = clearTimestampsAndParentTypesInDocument(appSearchFunction);
+        currentFunction = clearTimestampsAndParentTypesInDocument(currentFunction);
 
-        return document1.equals(document2);
+        return appSearchFunction.equals(currentFunction);
     }
 
     private GenericDocument clearTimestampsAndParentTypesInDocument(
@@ -623,7 +617,7 @@ public final class AppsIndexerImpl implements Closeable {
             indexedAppFunctionPackages.add(
                     appSearchAppFunctions
                             .get(i)
-                            .getPropertyString(AppFunctionDocument.PROPERTY_PACKAGE_NAME));
+                            .getPropertyString(AppFunctionStaticMetadata.PROPERTY_PACKAGE_NAME));
         }
         Set<String> currentAppFunctionPackages = getCurrentAppFunctionPackages(targetedPackages);
         return !indexedAppFunctionPackages.equals(currentAppFunctionPackages);
