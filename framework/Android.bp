@@ -58,27 +58,34 @@ java_sdk_library {
     sdk_version: "module_current",
     min_sdk_version: "Tiramisu",
     libs: [
+        "jspecify",
         "unsupportedappusage",
     ],
     static_libs: [
         // This list must be kept in sync with jarjar.txt
         "appsearch_flags_java_lib",
-        "jspecify",
         "modules-utils-preconditions",
     ],
     optimize: {
         enabled: true,
         optimize: true,
         shrink: true,
+        // Enable R8 compat mode. R8 full mode implicitly adds -allowaccessmodification,
+        // which may cause non-public fields and methods to become public.
+        proguard_compatibility: true,
         proguard_flags_files: ["proguard.flags"],
     },
     plugins: [
         "safeparcel-annotation-processor",
     ],
     defaults: ["framework-module-defaults"],
+    // WARNING: As part of the boot classpath, this framework target's permitted
+    // packages list should *only* contain packages that are entirely and
+    // exclusively owned by this module. Do not add additional packages
+    // (including any packages for dependencies) without first consulting
+    // mainline/API owners.
     permitted_packages: [
         "android.app.appsearch",
-        "org.jspecify.annotations",
     ],
     jarjar_rules: "jarjar-rules.txt",
     apex_available: ["com.android.appsearch"],

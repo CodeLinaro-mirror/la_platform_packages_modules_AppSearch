@@ -394,9 +394,77 @@ flag {
 }
 
 flag {
+    name: "enable_recovery_proof_persistence"
+    namespace: "appsearch"
+    description: "Whether mutations should call persistToDisk with RECOVERY_PROOF (true) or LITE (false)"
+    bug: "352556856"
+    is_exported: true
+}
+
+flag {
     name: "enable_schema_description"
     namespace: "appsearch"
     description: "Enable getDescription and related builders."
     bug: "326987971"
     is_exported: true
+}
+
+flag {
+    name: "enable_app_search_manage_blob_files"
+    namespace: "appsearch"
+    description: "Enable AppSearch to manage blob files."
+    bug: "392140774"
+    is_exported: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "enable_calculate_time_since_last_attempted_optimize"
+    namespace: "appsearch"
+    description: "Enable time since last optimize to be calculated by last attempted optimize run time instead of last successful optimize run time."
+    bug: "385189503"
+    is_exported: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "enable_qualified_id_join_index_v3"
+    namespace: "appsearch"
+    description: "Enable qualified id join index v3."
+    bug: "376913014"
+    is_exported: true
+}
+
+flag {
+    name: "enable_soft_index_restoration"
+    namespace: "appsearch"
+    description: "Enable soft index restoration."
+    bug: "384947619"
+    is_exported: true
+}
+
+flag {
+    name: "enable_marker_file_for_optimize"
+    namespace: "appsearch"
+    description: "Enable marker file creation for Optimize API."
+    bug: "385021899"
+    is_exported: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "enable_release_backup_schema_file_if_overlay_present"
+    namespace: "appsearch"
+    description: "Enable releasing the backup schema file instance in the schema store if the overlay schema instance exists."
+    bug: "396436137"
+    is_exported: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
 }
