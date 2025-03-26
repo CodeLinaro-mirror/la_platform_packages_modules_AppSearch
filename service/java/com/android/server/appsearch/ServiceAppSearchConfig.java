@@ -211,14 +211,17 @@ public interface ServiceAppSearchConfig extends AppSearchConfig, AutoCloseable {
      */
     long getCachedFullyPersistJobIntervalMillis();
 
-    /** Returns the encrypted storage size in bytes for isolated storage. */
-    default long getIsolatedStorageEncryptedStorageBytes() {
-        return IsolatedStorageServiceManager.DEFAULT_ENCRYPTED_STORAGE_BYTES;
-    }
-
     /** Returns the memory size in bytes for isolated storage. */
     default long getIsolatedStorageMemoryBytes() {
         return IsolatedStorageServiceManager.DEFAULT_MEMORY_BYTES;
+    }
+
+    /**
+     * The threshold to decide whether to use {@link android.os.SharedMemory SharedMemory} for icing
+     * data passing between the isolated storage service and AppSearch.
+     */
+    default long getIsolatedStorageIcingDataUnionSizeThresholdBytes() {
+        return IsolatedStorageServiceManager.DEFAULT_ICING_DATA_UNION_SIZE_THRESHOLD_BYTES;
     }
 
     /**
