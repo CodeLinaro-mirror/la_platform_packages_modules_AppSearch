@@ -120,9 +120,9 @@ public final class FrameworkServiceAppSearchConfig implements ServiceAppSearchCo
     public static final String KEY_FULLY_PERSIST_JOB_INTERVAL = "fully_persist_job_interval";
     public static final String KEY_MAX_OPEN_BLOB_COUNT = "max_open_blob_count";
     public static final String KEY_ORPHAN_BLOB_TIME_TO_LIVE_MS = "orphan_blob_time_to_live_ms";
-    public static final String ISOLATED_STORAGE_ENCRYPTED_STORAGE_BYTES =
-            "isolated_storage_encrypted_storage_bytes";
     public static final String ISOLATED_STORAGE_MEMORY_BYTES = "isolated_storage_memory_bytes";
+    public static final String ISOLATED_STORAGE_ICING_DATA_UNION_SIZE_THRESHOLD_BYTES =
+            "isolated_storage_icing_data_union_size_threshold_bytes";
     public static final String KEY_LIGHTWEIGHT_PERSIST_TYPE = "lightweight_persist_type";
 
     /**
@@ -663,22 +663,22 @@ public final class FrameworkServiceAppSearchConfig implements ServiceAppSearchCo
     }
 
     @Override
-    public long getIsolatedStorageEncryptedStorageBytes() {
-        synchronized (mLock) {
-            throwIfClosedLocked();
-            return mBundleLocked.getLong(
-                    ISOLATED_STORAGE_ENCRYPTED_STORAGE_BYTES,
-                    IsolatedStorageServiceManager.DEFAULT_ENCRYPTED_STORAGE_BYTES);
-        }
-    }
-
-    @Override
     public long getIsolatedStorageMemoryBytes() {
         synchronized (mLock) {
             throwIfClosedLocked();
             return mBundleLocked.getLong(
                     ISOLATED_STORAGE_MEMORY_BYTES,
                     IsolatedStorageServiceManager.DEFAULT_MEMORY_BYTES);
+        }
+    }
+
+    @Override
+    public long getIsolatedStorageIcingDataUnionSizeThresholdBytes() {
+        synchronized (mLock) {
+            throwIfClosedLocked();
+            return mBundleLocked.getLong(
+                    ISOLATED_STORAGE_ICING_DATA_UNION_SIZE_THRESHOLD_BYTES,
+                    IsolatedStorageServiceManager.DEFAULT_ICING_DATA_UNION_SIZE_THRESHOLD_BYTES);
         }
     }
 
@@ -988,21 +988,22 @@ public final class FrameworkServiceAppSearchConfig implements ServiceAppSearchCo
                     mBundleLocked.putInt(key, properties.getInt(key, DEFAULT_MAX_OPEN_BLOB_COUNT));
                 }
                 break;
-            case ISOLATED_STORAGE_ENCRYPTED_STORAGE_BYTES:
-                synchronized (mLock) {
-                    mBundleLocked.putLong(
-                            key,
-                            properties.getLong(
-                                    key,
-                                    IsolatedStorageServiceManager.DEFAULT_ENCRYPTED_STORAGE_BYTES));
-                }
-                break;
             case ISOLATED_STORAGE_MEMORY_BYTES:
                 synchronized (mLock) {
                     mBundleLocked.putLong(
                             key,
                             properties.getLong(
                                     key, IsolatedStorageServiceManager.DEFAULT_MEMORY_BYTES));
+                }
+                break;
+            case ISOLATED_STORAGE_ICING_DATA_UNION_SIZE_THRESHOLD_BYTES:
+                synchronized (mLock) {
+                    mBundleLocked.putLong(
+                            key,
+                            properties.getLong(
+                                    key,
+                                    IsolatedStorageServiceManager
+                                            .DEFAULT_ICING_DATA_UNION_SIZE_THRESHOLD_BYTES));
                 }
                 break;
             case KEY_LIGHTWEIGHT_PERSIST_TYPE:
