@@ -77,6 +77,10 @@ import com.android.server.appsearch.appsearch.proto.PackageIdentifierProto;
 import com.android.server.appsearch.appsearch.proto.VisibilityConfigProto;
 import com.android.server.appsearch.external.localstorage.stats.InitializeStats;
 import com.android.server.appsearch.external.localstorage.stats.OptimizeStats;
+import com.android.server.appsearch.external.localstorage.stats.PutDocumentStats;
+import com.android.server.appsearch.external.localstorage.stats.RemoveStats;
+import com.android.server.appsearch.external.localstorage.stats.SearchStats;
+import com.android.server.appsearch.external.localstorage.stats.SetSchemaStats;
 import com.android.server.appsearch.external.localstorage.util.PrefixUtil;
 import com.android.server.appsearch.external.localstorage.visibilitystore.CallerAccess;
 import com.android.server.appsearch.external.localstorage.visibilitystore.VisibilityChecker;
@@ -87,6 +91,7 @@ import com.android.server.appsearch.icing.proto.DebugInfoVerbosity;
 import com.android.server.appsearch.icing.proto.DocumentProto;
 import com.android.server.appsearch.icing.proto.GetOptimizeInfoResultProto;
 import com.android.server.appsearch.icing.proto.GetSchemaResultProto;
+import com.android.server.appsearch.icing.proto.IcingSearchEngineOptions;
 import com.android.server.appsearch.icing.proto.PersistType;
 import com.android.server.appsearch.icing.proto.PropertyConfigProto;
 import com.android.server.appsearch.icing.proto.PropertyProto;
@@ -4702,7 +4707,7 @@ public class AppSearchImplTest {
                         "package", "database", "namespace1", "id1", Collections.emptyMap());
         assertThat(getResult).isEqualTo(document);
 
-        // Inialize a new instance of AppSearch to test initialization.
+        // Initialize a new instance of AppSearch to test initialization.
         InitializeStats.Builder initStatsBuilder = new InitializeStats.Builder();
         AppSearchImpl appSearchImpl2 =
                 AppSearchImpl.create(
@@ -4790,7 +4795,7 @@ public class AppSearchImplTest {
                         "package", "database", "namespace1", "id2", Collections.emptyMap());
         assertThat(getResult).isEqualTo(document2);
 
-        // Inialize a new instance of AppSearch to test initialization.
+        // Initialize a new instance of AppSearch to test initialization.
         InitializeStats.Builder initStatsBuilder = new InitializeStats.Builder();
         AppSearchImpl appSearchImpl2 =
                 AppSearchImpl.create(
@@ -4895,7 +4900,7 @@ public class AppSearchImplTest {
                         "package", "database", "namespace2", "id2", Collections.emptyMap());
         assertThat(getResult).isEqualTo(document2);
 
-        // Inialize a new instance of AppSearch to test initialization.
+        // Initialize a new instance of AppSearch to test initialization.
         InitializeStats.Builder initStatsBuilder = new InitializeStats.Builder();
         AppSearchImpl appSearchImpl2 =
                 AppSearchImpl.create(
@@ -4963,7 +4968,7 @@ public class AppSearchImplTest {
                         "package", "database", "namespace1", "id1", Collections.emptyMap());
         assertThat(getResult).isEqualTo(document);
 
-        // Inialize a new instance of AppSearch to test initialization.
+        // Initialize a new instance of AppSearch to test initialization.
         InitializeStats.Builder initStatsBuilder = new InitializeStats.Builder();
         AppSearchImpl appSearchImpl2 =
                 AppSearchImpl.create(
@@ -5051,7 +5056,7 @@ public class AppSearchImplTest {
                         "package", "database", "namespace1", "id2", Collections.emptyMap());
         assertThat(getResult).isEqualTo(document2);
 
-        // Inialize a new instance of AppSearch to test initialization.
+        // Initialize a new instance of AppSearch to test initialization.
         InitializeStats.Builder initStatsBuilder = new InitializeStats.Builder();
         AppSearchImpl appSearchImpl2 =
                 AppSearchImpl.create(
@@ -5394,6 +5399,193 @@ public class AppSearchImplTest {
     }
 
     @Test
+    public void testStatsIsLaunchVM() throws Exception {
+        InitializeStats.Builder initStatsBuilder = new InitializeStats.Builder();
+        IcingSearchEngineOptions options =
+                mUnlimitedConfig.toIcingSearchEngineOptions(mAppSearchDir.getAbsolutePath());
+        IcingSearchEngine icingSearchEngine = new IcingSearchEngine(options);
+        // the bit mask for only enable launch VM feature.
+        int onlyLaunchVMFeature = 1;
+        mAppSearchImpl =
+                AppSearchImpl.create(
+                        mAppSearchDir,
+                        mUnlimitedConfig,
+                        initStatsBuilder,
+                        /* visibilityChecker= */ null,
+                        /* revocableFileDescriptorStore= */ null,
+                        icingSearchEngine,
+                        ALWAYS_OPTIMIZE);
+
+        // Initialization and check initStats
+        InitializeStats initStats = initStatsBuilder.build();
+        assertThat(initStats.getEnabledFeatures()).isEqualTo(onlyLaunchVMFeature);
+
+        // Set a schema and check SetSchemaStats
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(new AppSearchSchema.Builder("type").build());
+        SetSchemaStats.Builder setSchemaStatsBuilder =
+                new SetSchemaStats.Builder("package", "database");
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        setSchemaStatsBuilder);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        SetSchemaStats setSchemaStats = setSchemaStatsBuilder.build();
+        assertThat(setSchemaStats.getEnabledFeatures()).isEqualTo(onlyLaunchVMFeature);
+
+        // Add documents and test putDocumentStats.
+        AppSearchLogger fakeLogger =
+                new AppSearchLogger() {
+                    @Override
+                    public void logStats(@NonNull PutDocumentStats stats) {
+                        assertThat(stats.getEnabledFeatures()).isEqualTo(onlyLaunchVMFeature);
+                    }
+
+                    @Override
+                    public void logStats(@NonNull SearchStats stats) {
+                        assertThat(stats.getEnabledFeatures()).isEqualTo(onlyLaunchVMFeature);
+                    }
+                };
+        GenericDocument document =
+                new GenericDocument.Builder<>("namespace1", "id1", "type").build();
+        mAppSearchImpl.putDocument(
+                "package", "database", document, /* sendChangeNotifications= */ false, fakeLogger);
+
+        List<GenericDocument> documents = new ArrayList<>();
+        documents.add(document);
+        AppSearchBatchResult.Builder<String, Void> resultBuilder =
+                new AppSearchBatchResult.Builder<>();
+        mAppSearchImpl.batchPutDocuments(
+                "package1",
+                "database1",
+                documents,
+                resultBuilder,
+                /* sendChangeNotifications= */ false,
+                fakeLogger,
+                PersistType.Code.LITE);
+
+        mAppSearchImpl.query(
+                "package", "database", "", new SearchSpec.Builder().build(), fakeLogger);
+
+        // Delete the document and check remove stats
+        RemoveStats.Builder removeStatsBuilder = new RemoveStats.Builder("package", "database");
+        mAppSearchImpl.removeByQuery(
+                "package",
+                "database",
+                "",
+                new SearchSpec.Builder()
+                        .addFilterNamespaces("namespace1")
+                        .setTermMatch(SearchSpec.TERM_MATCH_EXACT_ONLY)
+                        .build(),
+                removeStatsBuilder);
+        RemoveStats removeStats = removeStatsBuilder.build();
+        assertThat(removeStats.getEnabledFeatures()).isEqualTo(onlyLaunchVMFeature);
+
+        // Trigger optimize and check optimize stats
+        OptimizeStats.Builder optimizeStatsBuilder = new OptimizeStats.Builder();
+        mAppSearchImpl.optimize(optimizeStatsBuilder);
+        OptimizeStats optimizeStats = optimizeStatsBuilder.build();
+        assertThat(optimizeStats.getEnabledFeatures()).isEqualTo(onlyLaunchVMFeature);
+    }
+
+    @Test
+    public void testStatsIsNotLaunchVM() throws Exception {
+        InitializeStats.Builder initStatsBuilder = new InitializeStats.Builder();
+        // the bit mask for nothing enabled feature.
+        int noLaunchFeature = 0;
+        mAppSearchImpl =
+                AppSearchImpl.create(
+                        mAppSearchDir,
+                        mUnlimitedConfig,
+                        initStatsBuilder,
+                        /* visibilityChecker= */ null,
+                        /* revocableFileDescriptorStore= */ null,
+                        /* icingSearchEngine= */ null,
+                        ALWAYS_OPTIMIZE);
+
+        // Initialization and check initStats
+        InitializeStats initStats = initStatsBuilder.build();
+        assertThat(initStats.getEnabledFeatures()).isEqualTo(noLaunchFeature);
+
+        // Set a schema and check SetSchemaStats
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(new AppSearchSchema.Builder("type").build());
+        SetSchemaStats.Builder setSchemaStatsBuilder =
+                new SetSchemaStats.Builder("package", "database");
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        setSchemaStatsBuilder);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        SetSchemaStats setSchemaStats = setSchemaStatsBuilder.build();
+        assertThat(setSchemaStats.getEnabledFeatures()).isEqualTo(noLaunchFeature);
+
+        // Add documents and test putDocumentStats.
+        AppSearchLogger fakeLogger =
+                new AppSearchLogger() {
+                    @Override
+                    public void logStats(@NonNull PutDocumentStats stats) {
+                        assertThat(stats.getEnabledFeatures()).isEqualTo(noLaunchFeature);
+                    }
+
+                    @Override
+                    public void logStats(@NonNull SearchStats stats) {
+                        assertThat(stats.getEnabledFeatures()).isEqualTo(noLaunchFeature);
+                    }
+                };
+        GenericDocument document =
+                new GenericDocument.Builder<>("namespace1", "id1", "type").build();
+        mAppSearchImpl.putDocument(
+                "package", "database", document, /* sendChangeNotifications= */ false, fakeLogger);
+
+        List<GenericDocument> documents = new ArrayList<>();
+        documents.add(document);
+        AppSearchBatchResult.Builder<String, Void> resultBuilder =
+                new AppSearchBatchResult.Builder<>();
+        mAppSearchImpl.batchPutDocuments(
+                "package1",
+                "database1",
+                documents,
+                resultBuilder,
+                /* sendChangeNotifications= */ false,
+                fakeLogger,
+                PersistType.Code.LITE);
+
+        mAppSearchImpl.query(
+                "package", "database", "", new SearchSpec.Builder().build(), fakeLogger);
+
+        // Delete the document and check remove stats
+        RemoveStats.Builder removeStatsBuilder = new RemoveStats.Builder("package", "database");
+        mAppSearchImpl.removeByQuery(
+                "package",
+                "database",
+                "",
+                new SearchSpec.Builder()
+                        .addFilterNamespaces("namespace1")
+                        .setTermMatch(SearchSpec.TERM_MATCH_EXACT_ONLY)
+                        .build(),
+                removeStatsBuilder);
+        RemoveStats removeStats = removeStatsBuilder.build();
+        assertThat(removeStats.getEnabledFeatures()).isEqualTo(noLaunchFeature);
+
+        // Trigger optimize and check optimize stats
+        OptimizeStats.Builder optimizeStatsBuilder = new OptimizeStats.Builder();
+        mAppSearchImpl.optimize(optimizeStatsBuilder);
+        OptimizeStats optimizeStats = optimizeStatsBuilder.build();
+        assertThat(optimizeStats.getEnabledFeatures()).isEqualTo(noLaunchFeature);
+    }
+
+    @Test
     public void testLimitConfig_DocumentSize() throws Exception {
         // Create a new mAppSearchImpl with a lower limit
         mAppSearchImpl.close();
@@ -5425,6 +5617,11 @@ public class AppSearchImplTest {
                                     @Override
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
                                     }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
@@ -5534,6 +5731,11 @@ public class AppSearchImplTest {
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
                                     }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
+                                    }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
@@ -5613,6 +5815,11 @@ public class AppSearchImplTest {
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
                                     }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
+                                    }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
@@ -5670,6 +5877,11 @@ public class AppSearchImplTest {
                                     @Override
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
                                     }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
@@ -5822,6 +6034,11 @@ public class AppSearchImplTest {
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
                                     }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
+                                    }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
@@ -5944,6 +6161,11 @@ public class AppSearchImplTest {
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
                                     }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
+                                    }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
@@ -6027,6 +6249,11 @@ public class AppSearchImplTest {
                                     @Override
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
                                     }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
@@ -6221,6 +6448,11 @@ public class AppSearchImplTest {
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
                                     }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
+                                    }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
@@ -6328,6 +6560,11 @@ public class AppSearchImplTest {
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
                                     }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
+                                    }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
@@ -6405,6 +6642,11 @@ public class AppSearchImplTest {
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
                                     }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
+                                    }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
@@ -6473,6 +6715,11 @@ public class AppSearchImplTest {
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
                                     }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
+                                    }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
@@ -6530,6 +6777,11 @@ public class AppSearchImplTest {
                                     @Override
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
                                     }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
@@ -6606,6 +6858,11 @@ public class AppSearchImplTest {
                                     @Override
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
                                     }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
@@ -6755,6 +7012,11 @@ public class AppSearchImplTest {
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
                                     }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
+                                    }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
@@ -6847,6 +7109,11 @@ public class AppSearchImplTest {
                                     @Override
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
                                     }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
@@ -6998,6 +7265,11 @@ public class AppSearchImplTest {
                                     @Override
                                     public int getMaxOpenBlobCount() {
                                         return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return getMaxDocumentSizeBytes();
                                     }
                                 },
                                 new LocalStorageIcingOptionsConfig()),
@@ -7172,6 +7444,11 @@ public class AppSearchImplTest {
                             public int getMaxOpenBlobCount() {
                                 return 2;
                             }
+
+                            @Override
+                            public int getMaxByteLimitForBatchPut() {
+                                return getMaxDocumentSizeBytes();
+                            }
                         },
                         new LocalStorageIcingOptionsConfig());
         mAppSearchImpl =
@@ -7244,6 +7521,11 @@ public class AppSearchImplTest {
                             @Override
                             public int getMaxOpenBlobCount() {
                                 return 2;
+                            }
+
+                            @Override
+                            public int getMaxByteLimitForBatchPut() {
+                                return getMaxDocumentSizeBytes();
                             }
                         },
                         new LocalStorageIcingOptionsConfig());
