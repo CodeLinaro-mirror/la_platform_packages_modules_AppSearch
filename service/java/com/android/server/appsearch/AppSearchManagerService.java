@@ -88,6 +88,7 @@ import android.app.appsearch.aidl.UnregisterObserverCallbackAidlRequest;
 import android.app.appsearch.aidl.WriteSearchResultsToFileAidlRequest;
 import android.app.appsearch.exceptions.AppSearchException;
 import android.app.appsearch.safeparcel.GenericDocumentParcel;
+import android.app.appsearch.stats.BaseStats;
 import android.app.appsearch.stats.SchemaMigrationStats;
 import android.app.appsearch.util.ExceptionUtil;
 import android.app.appsearch.util.LogUtil;
@@ -161,6 +162,10 @@ public class AppSearchManagerService extends SystemService {
     private static final String TAG = "AppSearchManagerService";
     @VisibleForTesting
     static final String SYSTEM_UI_INTELLIGENCE = "android.app.role.SYSTEM_UI_INTELLIGENCE";
+
+    // TODO(b/401245113) make it configurable.
+    // BatchPut flush conditions.
+    private static final int MAX_NUMBER_OF_DOCS_BUFFERED = 50;
 
     /**
      * An executor for system activity not tied to any particular user.
@@ -524,11 +529,13 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                         instance.getLogger().logStats(setSchemaStatsBuilder
                                 .setStatusCode(statusCode)
                                 .setSchemaMigrationCallType(request.getSchemaMigrationCallType())
                                 .setTotalLatencyMillis(totalLatencyMillis)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -623,6 +630,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -694,6 +702,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -732,7 +741,9 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
-                List<GenericDocument> takenActionGenericDocuments = null;  // initialize later
+                // initialize later.
+                // This is only used for logging stats.
+                List<GenericDocument> takenActionGenericDocuments = null;
 
                 try {
                     AppSearchBatchResult.Builder<String, Void> resultBuilder =
@@ -742,65 +753,138 @@ public class AppSearchManagerService extends SystemService {
                             request.getDocumentsParcel().getDocumentParcels();
                     List<GenericDocumentParcel> takenActionDocumentParcels =
                             request.getDocumentsParcel().getTakenActionGenericDocumentParcels();
-
-                    // Write GenericDocument of general documents
-                    for (int i = 0; i < documentParcels.size(); i++) {
-                        GenericDocument document = new GenericDocument(documentParcels.get(i));
-                        try {
-                            instance.getAppSearchImpl().putDocument(
-                                    callingPackageName,
-                                    request.getDatabaseName(),
-                                    document,
-                                    /* sendChangeNotifications= */ true,
-                                    instance.getLogger());
-                            resultBuilder.setSuccess(document.getId(), /* value= */ null);
-                            ++operationSuccessCount;
-                        } catch (AppSearchException | RuntimeException e) {
-                            // We don't rethrow here, so we can keep trying with the
-                            // following documents.
-                            AppSearchResult<Void> result = throwableToFailedResult(e);
-                            resultBuilder.setResult(document.getId(), result);
-                            // Since we can only include one status code in the atom,
-                            // for failures, we would just save the one for the last failure
-                            statusCode = result.getResultCode();
-                            ++operationFailureCount;
-                        }
-                    }
-
                     // Write GenericDocument of taken actions
                     if (!takenActionDocumentParcels.isEmpty()) {
                         takenActionGenericDocuments =
                                 new ArrayList<>(takenActionDocumentParcels.size());
                     }
-                    for (int i = 0; i < takenActionDocumentParcels.size(); i++) {
-                        GenericDocument document =
-                                new GenericDocument(takenActionDocumentParcels.get(i));
-                        takenActionGenericDocuments.add(document);
-                        try {
-                            instance.getAppSearchImpl().putDocument(
+
+                    // Write GenericDocument of general documents
+                    if (!Flags.enableBatchPut()) {
+                        for (int i = 0; i < documentParcels.size(); i++) {
+                            GenericDocument document = new GenericDocument(documentParcels.get(i));
+                            try {
+                                instance.getAppSearchImpl().putDocument(
+                                        callingPackageName,
+                                        request.getDatabaseName(),
+                                        document,
+                                        /* sendChangeNotifications= */ true,
+                                        instance.getLogger());
+                                resultBuilder.setSuccess(document.getId(), /* value= */ null);
+                                ++operationSuccessCount;
+                            } catch (AppSearchException | RuntimeException e) {
+                                // We don't rethrow here, so we can keep trying with the
+                                // following documents.
+                                AppSearchResult<Void> result = throwableToFailedResult(e);
+                                resultBuilder.setResult(document.getId(), result);
+                                // Since we can only include one status code in the atom,
+                                // for failures, we would just save the one for the last failure
+                                statusCode = result.getResultCode();
+                                ++operationFailureCount;
+                            }
+                        }
+
+                        for (int i = 0; i < takenActionDocumentParcels.size(); i++) {
+                            GenericDocument document =
+                                    new GenericDocument(takenActionDocumentParcels.get(i));
+                            takenActionGenericDocuments.add(document);
+                            try {
+                                instance.getAppSearchImpl().putDocument(
+                                        callingPackageName,
+                                        request.getDatabaseName(),
+                                        document,
+                                        /* sendChangeNotifications= */ true,
+                                        instance.getLogger());
+                                resultBuilder.setSuccess(document.getId(), /* value= */ null);
+                                ++operationSuccessCount;
+                            } catch (AppSearchException | RuntimeException e) {
+                                // We don't rethrow here, so we can keep trying with the
+                                // following documents.
+                                AppSearchResult<Void> result = throwableToFailedResult(e);
+                                resultBuilder.setResult(document.getId(), result);
+                                // Since we can only include one status code in the atom,
+                                // for failures, we would just save the one for the last failure
+                                statusCode = result.getResultCode();
+                                ++operationFailureCount;
+                            }
+                        }
+
+                        // Now that the batch has been written. Persist the newly written data.
+                        instance.getAppSearchImpl().persistToDisk(PersistType.Code.LITE);
+                    } else {
+                        if (!documentParcels.isEmpty() || !takenActionDocumentParcels.isEmpty()) {
+                            // List to hold the current batch.
+                            List<GenericDocument> currentBatch = new ArrayList<>();
+                            // The lock is held in AppSearchImpl.batchPutDocuments. To avoid holding
+                            // it for too long, we divide the documents into smaller batches. We
+                            // flush whenever we reach MAX_NUMBER_OF_DOCS_BUFFERED.
+                            // We also need to limit the # of bytes we send to the
+                            // isolated_storage_service, and it is currently done in AppSearchImpl
+                            // as it is easier to get the byte size from the proto directly.
+                            for (int i = 0; i < documentParcels.size(); i++) {
+                                if (currentBatch.size() >= MAX_NUMBER_OF_DOCS_BUFFERED) {
+                                    instance.getAppSearchImpl().batchPutDocuments(
+                                            callingPackageName,
+                                            request.getDatabaseName(),
+                                            currentBatch,
+                                            resultBuilder,
+                                            /* sendChangeNotifications=*/ true,
+                                            instance.getLogger(),
+                                            PersistType.Code.UNKNOWN);
+                                    currentBatch.clear();
+                                }
+                                currentBatch.add(new GenericDocument(documentParcels.get(i)));
+                            }
+                            for (int i = 0; i < takenActionDocumentParcels.size(); i++) {
+                                if (currentBatch.size() >= MAX_NUMBER_OF_DOCS_BUFFERED) {
+                                    instance.getAppSearchImpl().batchPutDocuments(
+                                            callingPackageName,
+                                            request.getDatabaseName(),
+                                            currentBatch,
+                                            resultBuilder,
+                                            /* sendChangeNotifications=*/ true,
+                                            instance.getLogger(),
+                                            PersistType.Code.UNKNOWN);
+                                    currentBatch.clear();
+                                }
+                                GenericDocument document = new GenericDocument(
+                                        takenActionDocumentParcels.get(i));
+                                takenActionGenericDocuments.add(document);
+                                currentBatch.add(document);
+                            }
+                            // flush the last batch with PersistType.Code.LITE.
+                            instance.getAppSearchImpl().batchPutDocuments(
                                     callingPackageName,
                                     request.getDatabaseName(),
-                                    document,
-                                    /* sendChangeNotifications= */ true,
-                                    instance.getLogger());
-                            resultBuilder.setSuccess(document.getId(), /* value= */ null);
-                            ++operationSuccessCount;
-                        } catch (AppSearchException | RuntimeException e) {
-                            // We don't rethrow here, so we can keep trying with the
-                            // following documents.
-                            AppSearchResult<Void> result = throwableToFailedResult(e);
-                            resultBuilder.setResult(document.getId(), result);
-                            // Since we can only include one status code in the atom,
-                            // for failures, we would just save the one for the last failure
-                            statusCode = result.getResultCode();
-                            ++operationFailureCount;
+                                    currentBatch,
+                                    resultBuilder,
+                                    /* sendChangeNotifications=*/ true,
+                                    instance.getLogger(),
+                                    PersistType.Code.LITE);
                         }
                     }
 
-                    // Now that the batch has been written. Persist the newly written data.
-                    instance.getAppSearchImpl().persistToDisk(PersistType.Code.LITE);
+                    // For batch put, we need to set the right operations metrics from
+                    // the batchResult.
+                    AppSearchBatchResult<String, Void> batchResult = resultBuilder.build();
+                    if (Flags.enableBatchPut()) {
+                        // reports the success/failure count. For batchPut, those two are not set
+                        // at this point.
+                        operationSuccessCount += batchResult.getSuccesses().size();
+
+                        // Handle failures.
+                        Map<String, AppSearchResult<Void>> failures = batchResult.getFailures();
+                        operationFailureCount += failures.size();
+                        // Previously we use the last failure to set the status code,
+                        // now we use the first id we get from the map.
+                        for (String id : failures.keySet()) {
+                            statusCode = failures.get(id).getResultCode();
+                            break;
+                        }
+                    }
+
                     invokeCallbackOnResult(callback, AppSearchBatchResultParcel
-                            .fromStringToVoid(resultBuilder.build()));
+                            .fromStringToVoid(batchResult));
 
                     // Schedule a task to dispatch change notifications. See requirements for where
                     // the method is called documented in the method description.
@@ -838,6 +922,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
 
                         // Extract metrics from taken action generic documents and add log.
@@ -847,7 +932,8 @@ public class AppSearchManagerService extends SystemService {
                                     .logStats(mSearchSessionStatsExtractor.extract(
                                             callingPackageName,
                                             request.getDatabaseName(),
-                                            takenActionGenericDocuments));
+                                            takenActionGenericDocuments,
+                                            instance.isVMEnabled()));
                         }
                     }
                 }
@@ -1007,6 +1093,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -1102,6 +1189,7 @@ public class AppSearchManagerService extends SystemService {
                                         estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -1199,6 +1287,7 @@ public class AppSearchManagerService extends SystemService {
                                         estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -1297,6 +1386,7 @@ public class AppSearchManagerService extends SystemService {
                                         estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
 
@@ -1407,6 +1497,7 @@ public class AppSearchManagerService extends SystemService {
                                         estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -1489,6 +1580,7 @@ public class AppSearchManagerService extends SystemService {
                                         estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -1569,6 +1661,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -1662,6 +1755,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -1760,7 +1854,8 @@ public class AppSearchManagerService extends SystemService {
                                 // http://dashboards/view/_72c98f9a_91d9_41d4_ab9a_bc14f79742b4
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
-                                .setNumOperationsFailed(operationFailureCount);
+                                .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled());
                         instance.getLogger().logStats(builder.build());
                         instance.getLogger().logStats(statsBuilder.build());
                     }
@@ -1832,6 +1927,7 @@ public class AppSearchManagerService extends SystemService {
                                     .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                     .setNumOperationsSucceeded(operationSuccessCount)
                                     .setNumOperationsFailed(operationFailureCount)
+                                    .setLaunchVMEnabled(instance.isVMEnabled())
                                     .build());
                         }
                     }
@@ -1927,6 +2023,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -2052,11 +2149,15 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
+                        long enabledFeatures = new BaseStats.Builder<>()
+                                .setLaunchVMEnabled(true).build().getEnabledFeatures();
                         instance.getLogger().logStats(schemaMigrationStatsBuilder
                                 .setStatusCode(statusCode)
                                 .setTotalLatencyMillis(totalLatencyMillis)
                                 .setSaveDocumentLatencyMillis(saveDocumentLatencyMillis)
+                                .setEnabledFeatures(enabledFeatures)
                                 .build());
                     }
                 }
@@ -2135,6 +2236,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -2231,6 +2333,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -2331,6 +2434,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -2416,6 +2520,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -2486,6 +2591,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
@@ -2550,6 +2656,7 @@ public class AppSearchManagerService extends SystemService {
                                     .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                     .setNumOperationsSucceeded(operationSuccessCount)
                                     .setNumOperationsFailed(operationFailureCount)
+                                    .setLaunchVMEnabled(instance.isVMEnabled())
                                     .build());
                         }
                     }
@@ -2647,6 +2754,7 @@ public class AppSearchManagerService extends SystemService {
                             .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                             .setNumOperationsSucceeded(operationSuccessCount)
                             .setNumOperationsFailed(operationFailureCount)
+                            .setLaunchVMEnabled(instance.isVMEnabled())
                             .build());
                 }
             }
@@ -2713,6 +2821,7 @@ public class AppSearchManagerService extends SystemService {
                             .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                             .setNumOperationsSucceeded(operationSuccessCount)
                             .setNumOperationsFailed(operationFailureCount)
+                            .setLaunchVMEnabled(instance.isVMEnabled())
                             .build());
                 }
             }
@@ -2779,6 +2888,7 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
+                                .setLaunchVMEnabled(instance.isVMEnabled())
                                 .build());
                     }
                 }
