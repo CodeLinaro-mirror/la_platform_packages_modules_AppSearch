@@ -22,6 +22,10 @@ import com.android.appsearch.flags.Flags;
 import com.android.server.appsearch.external.localstorage.AppSearchConfig;
 import com.android.server.appsearch.isolated_storage_service.IsolatedStorageServiceManager;
 
+import com.google.android.icing.proto.PersistType;
+
+import org.jspecify.annotations.NonNull;
+
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -207,14 +211,30 @@ public interface ServiceAppSearchConfig extends AppSearchConfig, AutoCloseable {
      */
     long getCachedFullyPersistJobIntervalMillis();
 
-    /** Returns the encrypted storage size in bytes for isolated storage. */
-    default long getIsolatedStorageEncryptedStorageBytes() {
-        return IsolatedStorageServiceManager.DEFAULT_ENCRYPTED_STORAGE_BYTES;
-    }
-
     /** Returns the memory size in bytes for isolated storage. */
     default long getIsolatedStorageMemoryBytes() {
         return IsolatedStorageServiceManager.DEFAULT_MEMORY_BYTES;
+    }
+
+    /**
+     * Default min time interval between consecutive optimize calls in millis if there is no value
+     * set for {@link #getCachedMinTimeOptimizeThresholdMs()} in the flag system.
+     */
+    default int defaultMinTimeOptimizeThresholdMillis() {
+        // TODO (b/385020106): figure out how to make the default 0 timeSinceLastOptimize work
+        //  with a higher threshold and return 4 hours when
+        //  Flags.enable_four_hour_min_optimize_threshold is true
+        return DEFAULT_MIN_TIME_OPTIMIZE_THRESHOLD_MILLIS;
+    }
+
+    /**
+     * Default {@code PersistType.Code} that should be used to persist common mutations such as
+     * PUTs or DELETEs.
+     */
+    default PersistType.@NonNull Code defaultLightweightPersistType() {
+        return Flags.enableRecoveryProofPersistence()
+                ? PersistType.Code.RECOVERY_PROOF
+                : PersistType.Code.LITE;
     }
 
     /**
@@ -224,14 +244,4 @@ public interface ServiceAppSearchConfig extends AppSearchConfig, AutoCloseable {
      */
     @Override
     void close();
-
-    /**
-     * Default min time interval between consecutive optimize calls in millis if there is no value
-     * set for {@link #getCachedMinTimeOptimizeThresholdMs()} in the flag system.
-     */
-    default int defaultMinTimeOptimizeThresholdMillis() {
-        return Flags.enableFourHourMinTimeOptimizeThreshold()
-                ? DEFAULT_FOUR_HOUR_MIN_TIME_OPTIMIZE_THRESHOLD_MILLIS
-                : DEFAULT_MIN_TIME_OPTIMIZE_THRESHOLD_MILLIS;
-    }
 }

@@ -15,11 +15,18 @@
  */
 package com.android.server.appsearch.isolated_storage_service;
 
-import com.android.server.appsearch.isolated_storage_service.IcingSearchResult;
-
 /**
- * Callback for getting icing search results.
+ * Configs for the isolated storage service.
  */
-oneway interface IIcingSearchResultCallback {
-  void onResult(in IcingSearchResult result);
+parcelable ServiceConfig {
+  /**
+   * Size of pVM's memory in bytes.
+   */
+  long pVmMemoryBytes;
+
+  /** The cached value for sampling interval for all the stats. */
+  int pCachedSamplingInterval;
+
+  /** The min time interval between samples in millis */
+  long pCachedMinTimeIntervalBetweenSamplesMillis;
 }
