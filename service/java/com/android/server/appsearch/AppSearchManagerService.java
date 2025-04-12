@@ -107,10 +107,12 @@ import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
 
 import com.android.appsearch.flags.Flags;
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalManagerRegistry;
 import com.android.server.SystemService;
@@ -152,6 +154,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The main service implementation which contains AppSearch's platform functionality.
@@ -190,6 +194,14 @@ public class AppSearchManagerService extends SystemService {
     // ContactsIndexer for dumpsys purpose.
     private final AppSearchModule.Lifecycle mLifecycle;
     private final SearchSessionStatsExtractor mSearchSessionStatsExtractor;
+
+    // Tracks the scheduled persistToDisk task, ensuring only one persistToDisk task is scheduled
+    // at a time.
+    //TODO(b/405169836) Consider moving the ScheduledFutures to a better place, e.g.,
+    // AppSearchUserInstance.
+    @GuardedBy("mPerUserPersistToDiskFutureLocked")
+    private final Map<UserHandle, ScheduledFuture<?>> mPerUserPersistToDiskFutureLocked =
+            new ArrayMap<>();
 
     public AppSearchManagerService(Context context, AppSearchModule.Lifecycle lifecycle) {
         super(context);
@@ -400,7 +412,17 @@ public class AppSearchManagerService extends SystemService {
         }
         try {
             mServiceImplHelper.setUserIsLocked(userHandle, true);
+
+            ScheduledFuture<?> persistToDiskFuture;
+            synchronized (mPerUserPersistToDiskFutureLocked) {
+                persistToDiskFuture = mPerUserPersistToDiskFutureLocked.remove(userHandle);
+            }
+            if (persistToDiskFuture != null) {
+                // Cancel the persistToDisk task if it is scheduled but has not yet started.
+                persistToDiskFuture.cancel(/* mayInterruptIfRunning= */ false);
+            }
             mExecutorManager.shutDownAndRemoveUserExecutor(userHandle);
+
             mAppSearchUserInstanceManager.closeAndRemoveUserInstance(userHandle);
             AppSearchMaintenanceService.cancelFullyPersistJobIfScheduled(
                     mContext, userHandle.getIdentifier());
@@ -810,7 +832,8 @@ public class AppSearchManagerService extends SystemService {
                         }
 
                         // Now that the batch has been written. Persist the newly written data.
-                        instance.getAppSearchImpl().persistToDisk(PersistType.Code.LITE);
+                        instance.getAppSearchImpl().persistToDisk(
+                                mAppSearchConfig.getLightweightPersistType());
                     } else {
                         if (!documentParcels.isEmpty() || !takenActionDocumentParcels.isEmpty()) {
                             // List to hold the current batch.
@@ -852,7 +875,8 @@ public class AppSearchManagerService extends SystemService {
                                 takenActionGenericDocuments.add(document);
                                 currentBatch.add(document);
                             }
-                            // flush the last batch with PersistType.Code.LITE.
+                            // flush the last batch with
+                            // mAppSearchConfig.getLightweightPersistType().
                             instance.getAppSearchImpl().batchPutDocuments(
                                     callingPackageName,
                                     request.getDatabaseName(),
@@ -860,7 +884,10 @@ public class AppSearchManagerService extends SystemService {
                                     resultBuilder,
                                     /* sendChangeNotifications=*/ true,
                                     instance.getLogger(),
-                                    PersistType.Code.LITE);
+                                    PersistType.Code.UNKNOWN);
+                            schedulePersistToDisk(targetUser, instance,
+                                    mAppSearchConfig.getLightweightPersistType(),
+                                    mAppSearchConfig.getCachedPersistDelayMillis());
                         }
                     }
 
@@ -2399,7 +2426,8 @@ public class AppSearchManagerService extends SystemService {
                         }
                     }
                     // Now that the batch has been written. Persist the newly written data.
-                    instance.getAppSearchImpl().persistToDisk(PersistType.Code.LITE);
+                    instance.getAppSearchImpl().persistToDisk(
+                            mAppSearchConfig.getLightweightPersistType());
                     invokeCallbackOnResult(callback, AppSearchBatchResultParcel.fromStringToVoid(
                             resultBuilder.build()));
 
@@ -2485,7 +2513,8 @@ public class AppSearchManagerService extends SystemService {
                             request.getSearchSpec(),
                             /* removeStatsBuilder= */ null);
                     // Now that the batch has been written. Persist the newly written data.
-                    instance.getAppSearchImpl().persistToDisk(PersistType.Code.LITE);
+                    instance.getAppSearchImpl().persistToDisk(
+                            mAppSearchConfig.getLightweightPersistType());
                     ++operationSuccessCount;
                     invokeCallbackOnResult(callback, AppSearchResultParcel.fromVoid());
 
@@ -3215,6 +3244,33 @@ public class AppSearchManagerService extends SystemService {
                         }
                     }
                 });
+    }
+
+    @WorkerThread
+    private void schedulePersistToDisk(
+            @NonNull UserHandle targetUser,
+            @NonNull AppSearchUserInstance instance,
+            @NonNull PersistType.Code persistType,
+            long delayMs) {
+        if (mServiceImplHelper.isUserLocked(targetUser)) {
+            // We shouldn't schedule any task to locked user.
+            return;
+        }
+        synchronized (mPerUserPersistToDiskFutureLocked) {
+            ScheduledFuture<?> persistToDiskFuture =
+                    mPerUserPersistToDiskFutureLocked.get(targetUser);
+            if (persistToDiskFuture == null || persistToDiskFuture.isDone()) {
+                persistToDiskFuture = mExecutorManager.scheduleLambdaForUserNoCallbackAsync(
+                        targetUser, () -> {
+                            try {
+                                instance.getAppSearchImpl().persistToDisk(persistType);
+                            } catch (Exception e) {
+                                Log.w(TAG, "Unable to persist the data to disk", e);
+                            }
+                        }, delayMs, TimeUnit.MILLISECONDS);
+                mPerUserPersistToDiskFutureLocked.put(targetUser, persistToDiskFuture);
+            }
+        }
     }
 
     /**
