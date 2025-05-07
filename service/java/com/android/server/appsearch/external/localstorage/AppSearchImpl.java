@@ -1114,10 +1114,7 @@ public final class AppSearchImpl implements Closeable {
             List<PutDocumentRequest.Builder> requestBuilderList = new ArrayList<>();
             // This is to make sure the batching size is at least getMaxDocumentSizeBytes.
             // Otherwise one valid size doc may not fit into a batch.
-            int maxBufferedBytes =
-                    Integer.max(
-                            mConfig.getMaxByteLimitForBatchPut(),
-                            mConfig.getMaxDocumentSizeBytes());
+            int maxBufferedBytes = mConfig.getMaxByteLimitForBatchPut();
             int currentTotalBytes = 0;
             PutDocumentRequest.Builder currentBatchBuilder =
                     PutDocumentRequest.newBuilder().setPersistType(PersistType.Code.UNKNOWN);
@@ -1152,10 +1149,15 @@ public final class AppSearchImpl implements Closeable {
                     int serializedSizeBytes = finalDocument.getSerializedSize();
                     enforceLimitConfigLocked(packageName, docId, serializedSizeBytes);
 
-                    // to see if we want to finish the current batch and build a PutRequestProto.
-                    // based on how we calculate maxBufferedBytes, serializedSizeBytes is guaranteed
-                    // to be smaller or same as maxBufferedBytes.
-                    if (serializedSizeBytes > maxBufferedBytes - currentTotalBytes) {
+                    // to see if we want to finish the current batch due to the byte limitation and
+                    // build a PutRequestProto.
+                    // - It is possible for serializedSizeBytes to exceed maxBufferedBytes if the
+                    //   currentBatch is empty, then we must add the document to it instead of
+                    //   finishing the batch.
+                    // - If the currentBatch is non-empty, then we should finish that batch and
+                    //   create a new one with this document.
+                    if (currentBatchBuilder.getDocumentsCount() > 0
+                            && serializedSizeBytes > maxBufferedBytes - currentTotalBytes) {
                         // Time to finish the current batch.
                         requestBuilderList.add(currentBatchBuilder);
 
@@ -3849,6 +3851,37 @@ public final class AppSearchImpl implements Closeable {
                             + callingDatabaseName
                             + ", blob database: "
                             + blobHandle.getDatabaseName());
+        }
+    }
+
+    /** Calls getSchema in a thread safe manner. */
+    public SchemaProto rawGetSchema() {
+        mReadWriteLock.readLock().lock();
+        try {
+            return mIcingSearchEngineLocked.getSchema().getSchema();
+        } finally {
+            mReadWriteLock.readLock().unlock();
+        }
+    }
+
+    /** Calls search in a thread safe manner. */
+    public SearchResultProto rawSearch(
+            SearchSpecProto spec, ScoringSpecProto scoringSpec, ResultSpecProto resultSpec) {
+        mReadWriteLock.readLock().lock();
+        try {
+            return mIcingSearchEngineLocked.search(spec, scoringSpec, resultSpec);
+        } finally {
+            mReadWriteLock.readLock().unlock();
+        }
+    }
+
+    /** Calls getSchema in a thread safe manner. */
+    public SearchResultProto rawGetNextPage(long nextPageToken) {
+        mReadWriteLock.readLock().lock();
+        try {
+            return mIcingSearchEngineLocked.getNextPage(nextPageToken);
+        } finally {
+            mReadWriteLock.readLock().unlock();
         }
     }
 }
