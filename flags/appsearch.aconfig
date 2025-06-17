@@ -601,6 +601,16 @@ flag {
 }
 
 flag {
+    name: "enable_user_instance_futures"
+    namespace: "appsearch"
+    description: "Enables using futures to create user instances."
+    bug: "415031127"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
     name: "enable_database_scoped_schema_operations"
     namespace: "appsearch"
     description: "Enable database-scoped set and get schema operations for AppSearch internal impl."
@@ -628,6 +638,13 @@ flag {
 }
 
 flag {
+    name: "enable_result_unavailable"
+    namespace: "appsearch"
+    description: "Enables the AppSearchResult#RESULT_UNAVAILABLE."
+    bug: "404210068"
+}
+
+flag {
     name: "enable_enterprise_visible_to_config"
     namespace: "appsearch"
     description: "Enable checking VisibleToConfig for schema visibility when querying with enterprise global search session."
@@ -635,4 +652,11 @@ flag {
     metadata {
         purpose: PURPOSE_BUGFIX
     }
+}
+
+flag {
+    name: "enable_eigen_embedding_scoring"
+    namespace: "appsearch"
+    description: "Enables the Eigen library for embedding scoring."
+    bug: "420960001"
 }
