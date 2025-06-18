@@ -16,7 +16,6 @@
 
 package com.android.server.appsearch;
 
-import static android.app.appsearch.AppSearchResult.RESULT_INTERNAL_ERROR;
 import static android.app.appsearch.AppSearchResult.RESULT_OK;
 import static android.app.appsearch.AppSearchResult.throwableToFailedResult;
 
@@ -39,6 +38,7 @@ import com.android.server.appsearch.external.localstorage.AppSearchImpl;
 import com.android.server.appsearch.external.localstorage.stats.InitializeStats;
 import com.android.server.appsearch.external.localstorage.visibilitystore.VisibilityChecker;
 import com.android.server.appsearch.isolated_storage_service.DataMigrationUtil;
+import com.android.server.appsearch.isolated_storage_service.IcingSearchEngine;
 import com.android.server.appsearch.isolated_storage_service.IsolatedStorageServiceManager;
 import com.android.server.appsearch.util.ExecutorManager;
 
@@ -160,40 +160,18 @@ public final class AppSearchUserInstanceManager {
      * <p>All mutations applied to the underlying {@link AppSearchImpl} will be persisted to disk.
      *
      * @param userHandle The multi-user user handle of the user that needs to be removed.
+     * @param removeUserData Whether to remove the user data.
      */
-    public void closeAndRemoveUserInstance(@NonNull UserHandle userHandle) {
+    public void closeAndRemoveUserInstance(@NonNull UserHandle userHandle, boolean removeUserData) {
         Objects.requireNonNull(userHandle);
         if (Flags.enableUserInstanceFutures()) {
-            closeAndRemoveUserInstanceFuture(userHandle);
+            closeAndRemoveUserInstanceFuture(userHandle, removeUserData);
         } else {
-            internalCloseAndRemoveUserInstance(userHandle);
+            internalCloseAndRemoveUserInstance(userHandle, removeUserData);
         }
 
         synchronized (mStorageInfoLocked) {
             mStorageInfoLocked.remove(userHandle);
-        }
-    }
-
-    /**
-     * Removes the user data for the given {@link AppSearchUserInstance} user. This is handled
-     * automatically by the system unless isolated storage is used.
-     *
-     * @param userHandle The multi-user user handle of the user that needs to be removed.
-     * @param userContext Context for the user instance being removed.
-     * @param isolatedStorageServiceManager Manager for isolated storage.
-     */
-    public void removeUserData(
-            @NonNull UserHandle userHandle,
-            @NonNull Context userContext,
-            @NonNull ServiceAppSearchConfig config,
-            @Nullable IsolatedStorageServiceManager isolatedStorageServiceManager) {
-        Objects.requireNonNull(userHandle);
-        Objects.requireNonNull(userContext);
-        Objects.requireNonNull(config);
-
-        // Remove the icing user instance in IsolatedStorageService
-        if (isolatedStorageServiceManager != null) {
-            isolatedStorageServiceManager.removeUserInstance(userHandle);
         }
     }
 
@@ -343,6 +321,9 @@ public final class AppSearchUserInstanceManager {
                         TAG,
                         "Creating new AppSearch instance for " + userHandle + " at: " + icingDir);
             }
+            // Data is stored in host. We need to delete the migration status file
+            // so next migration can run.
+            DataMigrationUtil.deleteMigrationStatus(userHandle, appSearchDir);
         }
         VisibilityChecker visibilityCheckerImpl =
                 AppSearchComponentFactory.createVisibilityCheckerInstance(userContext);
@@ -352,8 +333,9 @@ public final class AppSearchUserInstanceManager {
                     new FrameworkRevocableFileDescriptorStore(userContext, config);
         }
         @AppSearchResult.ResultCode int statusCode = RESULT_OK;
+        AppSearchImpl appSearchImpl = null;
         try {
-            AppSearchImpl appSearchImpl =
+            appSearchImpl =
                     AppSearchImpl.create(
                             icingDir,
                             config,
@@ -372,6 +354,20 @@ public final class AppSearchUserInstanceManager {
         } catch (AppSearchException e) {
             AppSearchResult<Void> failedResult = throwableToFailedResult(e);
             statusCode = failedResult.getResultCode();
+            if (Flags.enableCloseAppsearchOnCreationFailure() && appSearchImpl != null) {
+                // If we've created the instance, but encountered some issue.
+                // Close this instance so that we clean up it's resources.
+                Log.e(TAG, "Failed to create AppSearch instance: ", e);
+                appSearchImpl.close();
+            }
+            throw e;
+        } catch (Exception e) {
+            if (Flags.enableCloseAppsearchOnCreationFailure() && appSearchImpl != null) {
+                // If we've created the instance, but encountered some issue.
+                // Close this instance so that we clean up it's resources.
+                Log.e(TAG, "Failed to create AppSearch instance: ", e);
+                appSearchImpl.close();
+            }
             throw e;
         } finally {
             initStatsBuilder
@@ -461,7 +457,7 @@ public final class AppSearchUserInstanceManager {
         }
     }
 
-    private void closeAndRemoveUserInstanceFuture(UserHandle userHandle) {
+    private void closeAndRemoveUserInstanceFuture(UserHandle userHandle, boolean removeUserData) {
         Future<AppSearchUserInstance> instanceFuture;
         mFutureInstanceMapLock.lock();
         try {
@@ -472,7 +468,12 @@ public final class AppSearchUserInstanceManager {
         if (instanceFuture != null) {
             if (instanceFuture.isDone()) {
                 try {
-                    instanceFuture.get().getAppSearchImpl().close();
+                    AppSearchImpl appSearchImpl = instanceFuture.get().getAppSearchImpl();
+                    if (removeUserData) {
+                        appSearchImpl.clearAndDestroy();
+                    } else {
+                        appSearchImpl.close();
+                    }
                 } catch (InterruptedException | ExecutionException | CancellationException e) {
                     Log.w(
                             TAG,
@@ -485,7 +486,7 @@ public final class AppSearchUserInstanceManager {
         }
     }
 
-    private void internalCloseAndRemoveUserInstance(UserHandle userHandle) {
+    private void internalCloseAndRemoveUserInstance(UserHandle userHandle, boolean removeUserData) {
         AppSearchUserInstance instance;
         mInstanceMapLock.lock();
         try {
@@ -494,7 +495,11 @@ public final class AppSearchUserInstanceManager {
             mInstanceMapLock.unlock();
         }
         if (instance != null) {
-            instance.getAppSearchImpl().close();
+            if (removeUserData) {
+                instance.getAppSearchImpl().clearAndDestroy();
+            } else {
+                instance.getAppSearchImpl().close();
+            }
         }
     }
 
@@ -607,11 +612,10 @@ public final class AppSearchUserInstanceManager {
     }
 
     /**
-     * Gets the isolated icing engine for the user if isolated storage is enabled.
+     * Gets the isolated icing engine for the user.
      *
-     * @return IcingSearchEngineInterface or null if isolated storage is not enabled.
-     * @throws AppSearchException if isolated storage is enabled, but the isolated storage service
-     *     is unavailable or fails.
+     * @return IcingSearchEngineInterface or null if isolated storage can't be used right away due
+     *     to, e.g. pending data migration.
      */
     @Nullable
     private IcingSearchEngineInterface maybeGetIsolatedIcingSearchEngine(
@@ -619,8 +623,7 @@ public final class AppSearchUserInstanceManager {
             @NonNull UserHandle userHandle,
             @NonNull ServiceAppSearchConfig config,
             @NonNull ExecutorManager executorManager,
-            @NonNull IsolatedStorageServiceManager isolatedStorageServiceManager)
-            throws AppSearchException {
+            @NonNull IsolatedStorageServiceManager isolatedStorageServiceManager) {
         Objects.requireNonNull(userContext);
         Objects.requireNonNull(userHandle);
         Objects.requireNonNull(config);
@@ -628,20 +631,21 @@ public final class AppSearchUserInstanceManager {
         Objects.requireNonNull(isolatedStorageServiceManager);
 
         IcingSearchEngineInterface isolatedIcingInterface =
-                isolatedStorageServiceManager.getIcingInstance(userHandle, config);
+                new IcingSearchEngine(
+                        isolatedStorageServiceManager,
+                        userHandle,
+                        config.toIcingSearchEngineOptions(
+                                /* baseDir= */ "appsearch", /* isVMEnabled= */ true));
 
-        // Enforce successful isolated storage creation when configured for use
-        if (isolatedIcingInterface == null) {
-            Log.e(TAG, "Failed to get isolated storage instance!");
-            throw new AppSearchException(
-                    RESULT_INTERNAL_ERROR, "Failed to get isolated storage instance!");
+        // Initialize the isolated storage service if not already
+        try {
+            isolatedStorageServiceManager.initialize();
+        } catch (AppSearchException e) {
+            Log.e(TAG, "Failed to initialize IsolatedStorageService", e);
         }
 
-        if (!DataMigrationUtil.needDataMigration(userContext, userHandle)) {
-            return isolatedIcingInterface;
-        }
-
-        if (!config.enableIsolatedStorageMigration()) {
+        if (!config.enableIsolatedStorageMigration()
+                || !DataMigrationUtil.needDataMigration(userContext, userHandle)) {
             return isolatedIcingInterface;
         }
 
@@ -650,6 +654,8 @@ public final class AppSearchUserInstanceManager {
             ScheduledFuture<?> migrationFuture = mPerUserMigrationFutureLocked.get(userHandle);
             if (migrationFuture == null) {
                 // TODO(b/407815165): Allow configuring resetDestination, forceOverride & delay
+                // TODO(b/407815165): we should schedule a background job to do migration,
+                //  and we should block any incoming write APIs while migration runs.
                 migrationFuture =
                         executorManager.scheduleLambdaForUserNoCallbackAsync(
                                 userHandle,
@@ -695,18 +701,30 @@ public final class AppSearchUserInstanceManager {
                                                         .swapIcingSearchEngineLocked(
                                                                 isolatedIcingInterface);
 
+                                        DataMigrationUtil.createMigrationStatus(
+                                                AppSearchEnvironmentFactory
+                                                        .getEnvironmentInstance()
+                                                        .getAppSearchDir(userContext, userHandle));
+
                                         // Destroy the current instance.
-                                        ResetResultProto resetResult =
-                                                priorIcingSearchEngine.clearAndDestroy();
-                                        priorIcingSearchEngine.close();
-                                        if (LogUtil.INFO) {
-                                            Log.i(TAG, "Clear and destroy result: " + resetResult);
+                                        if (Flags.enableWipingOutSystemServerDataAfterMigration()) {
+                                            // TODO(b/407815165): We can't delete blob related
+                                            //  files as well as migration status file.
+                                            ResetResultProto resetResult =
+                                                    priorIcingSearchEngine.clearAndDestroy();
+                                            priorIcingSearchEngine.close();
+                                            if (LogUtil.INFO) {
+                                                Log.i(TAG,
+                                                        "Clear and destroy result: "
+                                                                + resetResult);
+                                            }
                                         }
                                     }
                                 },
                                 1,
                                 TimeUnit.MINUTES);
                 mPerUserMigrationFutureLocked.put(userHandle, migrationFuture);
+                Log.i(TAG, "Data migration for " + userHandle + " scheduled.");
             }
         }
         // If we need a migration, return null so that AppSearch will create the non-isolated
