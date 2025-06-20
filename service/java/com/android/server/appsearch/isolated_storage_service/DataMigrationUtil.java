@@ -17,17 +17,21 @@ package com.android.server.appsearch.isolated_storage_service;
 
 import android.annotation.NonNull;
 import android.app.appsearch.AppSearchEnvironmentFactory;
+import android.app.appsearch.exceptions.AppSearchException;
 import android.content.Context;
 import android.os.UserHandle;
 import android.util.Log;
 
 import com.android.server.appsearch.external.localstorage.AppSearchImpl;
+import com.android.server.appsearch.external.localstorage.util.PrefixUtil;
 
 import com.google.android.icing.IcingSearchEngineInterface;
 import com.google.android.icing.proto.BatchPutResultProto;
 import com.google.android.icing.proto.PutDocumentRequest;
 import com.google.android.icing.proto.ResetResultProto;
 import com.google.android.icing.proto.ResultSpecProto;
+import com.google.android.icing.proto.SchemaProto;
+import com.google.android.icing.proto.SchemaTypeConfigProto;
 import com.google.android.icing.proto.ScoringSpecProto;
 import com.google.android.icing.proto.SearchResultProto;
 import com.google.android.icing.proto.SearchSpecProto;
@@ -36,6 +40,7 @@ import com.google.android.icing.proto.StatusProto;
 import com.google.android.icing.proto.TermMatchType;
 
 import java.io.File;
+import java.io.IOException;
 
 /**
  * Utils to migrate data from AppSearch to IsolatedStorage.
@@ -43,10 +48,11 @@ import java.io.File;
  * @hide
  */
 public class DataMigrationUtil {
-
     private DataMigrationUtil() {}
 
     private static final String TAG = "IcingDataMigration";
+
+    private static final String DATA_MIGRATION_STATUS_FILE = "data_migration_status";
 
     /** Checks if data migration is needed from AppSearch to Isolated Storage. */
     // TODO(b/407815165) Right now just check if the icing/version on host exists
@@ -56,9 +62,52 @@ public class DataMigrationUtil {
         File appSearchDir =
                 AppSearchEnvironmentFactory.getEnvironmentInstance()
                         .getAppSearchDir(userContext, userHandle);
-        File icingDir = new File(appSearchDir, "icing/version");
+        File icingVersion = new File(appSearchDir, "icing/version");
+        File dataMigrationStatus = new File(
+                appSearchDir, DATA_MIGRATION_STATUS_FILE);
 
-        return icingDir.exists();
+        // icing version exists means icing has been initialized and used.
+        // And if there is no migration_status file created, it means migration has not been
+        // scheduled yet, so we need to schedule a migration.
+        return icingVersion.exists() && !dataMigrationStatus.exists();
+    }
+
+    /** deletes the migration status file if it exists. */
+    public static void deleteMigrationStatus(
+            @NonNull UserHandle userHandle,
+            @NonNull File appSearchDir) {
+        try {
+            File icingMigrationStatus = new File(
+                    appSearchDir,  DATA_MIGRATION_STATUS_FILE);
+            if (icingMigrationStatus.exists())  {
+                Log.i(TAG,
+                        "data migration was run before for " + userHandle);
+                icingMigrationStatus.delete();
+            }
+        } catch (Exception e) {
+            Log.e(TAG,
+                    "Exception thrown while checking migration status "
+                            + "file for " + userHandle,
+                    e);
+        }
+    }
+
+    /** creates the migration status file. */
+    public static void createMigrationStatus(@NonNull File appSearchDir) {
+        try {
+            // TODO(b/407815165) right now we just create this file
+            //  to mark migration done successfully.
+            //  In the future we might want to create the file
+            //  earlier and put different statuses for
+            //  different stages during migration.
+            File icingMigrationStatus = new File(
+                    appSearchDir, DATA_MIGRATION_STATUS_FILE);
+            icingMigrationStatus.createNewFile();
+        } catch (IOException e) {
+            Log.e(TAG,
+                    "Fail to create marker file to mark "
+                            + "data migration done.", e);
+        }
     }
 
     /**
@@ -88,8 +137,11 @@ public class DataMigrationUtil {
         }
 
         // Step-1 Set schema in destination by getting schema from source.
-        SetSchemaResultProto setSchemaResult =
-                destination.setSchema(source.rawGetSchema(), forceOverride);
+        SchemaProto rawSchema = source.rawGetSchema();
+        if (!source.useDatabaseScopedSchemaOperations()) {
+            rawSchema = getSchemaProtoWithDatabase(rawSchema);
+        }
+        SetSchemaResultProto setSchemaResult = destination.setSchema(rawSchema, forceOverride);
         if (setSchemaResult.getStatus().getCode() != StatusProto.Code.OK) {
             return setSchemaResult.getStatus();
         }
@@ -148,5 +200,30 @@ public class DataMigrationUtil {
         Log.i(TAG, "Successfully migrated " + totalDocuments + " documents");
 
         return StatusProto.newBuilder().setCode(StatusProto.Code.OK).build();
+    }
+
+    /**
+     * Returns a new {@link SchemaProto} with the database field populated for each type in the
+     * input schema.
+     */
+    private static SchemaProto getSchemaProtoWithDatabase(SchemaProto schema) {
+        SchemaProto.Builder schemaBuilder = SchemaProto.newBuilder();
+        for (int i = 0; i < schema.getTypesList().size(); i++) {
+            SchemaTypeConfigProto type = schema.getTypes(i);
+            String prefix = "";
+            try {
+                prefix = PrefixUtil.getPrefix(type.getSchemaType());
+            } catch (AppSearchException e) {
+                Log.w(
+                        TAG,
+                        "No database prefix found in schema type: "
+                                + type.getSchemaType()
+                                + ". This should never happen.");
+            }
+            SchemaTypeConfigProto.Builder typeBuilder =
+                    SchemaTypeConfigProto.newBuilder(type).setDatabase(prefix);
+            schemaBuilder.addTypes(typeBuilder);
+        }
+        return schemaBuilder.build();
     }
 }

@@ -996,7 +996,8 @@ public class AppSearchImplTest {
                         /* revocableFileDescriptorStore= */ null,
                         // Initializing with a custom icing instance will cause AppSearch to assume
                         // isVMEnabled. Therefore we cannot call AppSearch::setSchema below since
-                        // it'll still use database-scoped operations.
+                        // it'll
+                        // still use database-scoped operations.
                         icingSearchEngine,
                         ALWAYS_OPTIMIZE);
 
@@ -1154,6 +1155,11 @@ public class AppSearchImplTest {
                                 mUnlimitedConfig.toIcingSearchEngineOptions(
                                         mAppSearchDir.getAbsolutePath(), /* isVMEnabled= */ false))
                         .setEnableStrictPageByteSizeLimit(true)
+                        // We need to enable schema database as by passing in a custom Icing
+                        // instance, AppSearch assumes that the VM is enabled and will use
+                        // database-scoped schema operations. We need Icing's options to match
+                        // this in order for setSchema to work properly.
+                        .setEnableSchemaDatabase(true)
                         .build();
         IcingSearchEngine icingSearchEngine = new IcingSearchEngine(icingOptions);
         AppSearchConfig appSearchConfig =
@@ -1190,8 +1196,8 @@ public class AppSearchImplTest {
                         /* setSchemaStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
-        // Insert 5 documents
-        for (int i = 0; i < 5; i++) {
+        // Insert 12 documents
+        for (int i = 0; i < 12; i++) {
             AppSearchEmail email =
                     new AppSearchEmail.Builder("namespace", "id" + i)
                             .setFrom("from@example.com")
@@ -1207,7 +1213,8 @@ public class AppSearchImplTest {
                     /* logger= */ null);
         }
 
-        // Search for the documents, all 5 documents should be returned despite the page size limit
+        // Search for the documents with requested page size of 5, 5 documents should be returned
+        // despite the page byte-size limit
         SearchSpec searchSpec =
                 new SearchSpec.Builder()
                         .setTermMatch(TermMatchType.Code.PREFIX_VALUE)
@@ -1216,6 +1223,23 @@ public class AppSearchImplTest {
         SearchResultPage searchResultPage =
                 mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
         assertThat(searchResultPage.getResults()).hasSize(5);
+        assertThat(searchResultPage.getNextPageToken())
+                .isNotEqualTo(SearchResultPage.EMPTY_PAGE_TOKEN);
+
+        // Do getNextPage. A full page of 5 results should be returned again.
+        searchResultPage =
+                mAppSearchImpl.getNextPage(
+                        "package1", searchResultPage.getNextPageToken(), /* logger= */ null);
+        assertThat(searchResultPage.getResults()).hasSize(5);
+        assertThat(searchResultPage.getNextPageToken())
+                .isNotEqualTo(SearchResultPage.EMPTY_PAGE_TOKEN);
+
+        // Do getNextPage one last time. Only 2 results should remain, and getNextPageToken should
+        // be invalid after this call.
+        searchResultPage =
+                mAppSearchImpl.getNextPage(
+                        "package1", searchResultPage.getNextPageToken(), /* logger= */ null);
+        assertThat(searchResultPage.getResults()).hasSize(2);
         assertThat(searchResultPage.getNextPageToken())
                 .isEqualTo(SearchResultPage.EMPTY_PAGE_TOKEN);
     }
