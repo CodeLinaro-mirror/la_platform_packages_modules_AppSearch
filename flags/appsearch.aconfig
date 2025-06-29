@@ -206,6 +206,13 @@ flag {
 }
 
 flag {
+    name: "app_open_event_indexer_enabled_v2"
+    namespace: "appsearch"
+    description: "Enables the app open event indexer module"
+    bug: "357835538"
+}
+
+flag {
     name: "enable_result_already_exists"
     namespace: "appsearch"
     description: "Enable the RESULT_ALREADY_EXISTS constant in AppSearchResult"
@@ -655,16 +662,6 @@ flag {
 }
 
 flag {
-    name: "app_open_event_indexer_paginated_read_enabled"
-    namespace: "appsearch"
-    description: "Enables paginated reads from UsageStatsManager to reduce peak memory usage"
-    bug: "415189891"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
     name: "enable_delayed_persist_to_disk"
     namespace: "appsearch"
     description: "Enables AppSearch write API calls to schedule persistToDisk calls after a specified delay, rather than executing them immediately."
@@ -720,4 +717,11 @@ flag {
     metadata {
         purpose: PURPOSE_BUGFIX
     }
+}
+
+flag {
+    name: "enable_no_op_manual_persist"
+    namespace: "appsearch"
+    description: "Makes manual persist to disk calls a no-op."
+    bug: "417463182"
 }
