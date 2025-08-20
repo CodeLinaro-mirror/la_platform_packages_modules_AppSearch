@@ -55,14 +55,13 @@ import java.util.Set;
  * @hide
  */
 public final class AppsIndexerImpl implements Closeable {
-    static final String TAG = "AppSearchAppsIndexerImpl";
+    static final String TAG = "AppSearchAppIndxrImpl";
 
     private final Context mContext;
     private final AppSearchHelper mAppSearchHelper;
     private final AppsIndexerConfig mAppsIndexerConfig;
 
-    public AppsIndexerImpl(@NonNull Context context, @NonNull AppsIndexerConfig appsIndexerConfig)
-            throws AppSearchException {
+    public AppsIndexerImpl(@NonNull Context context, @NonNull AppsIndexerConfig appsIndexerConfig) {
         mContext = Objects.requireNonNull(context);
         mAppSearchHelper = new AppSearchHelper(context);
         mAppsIndexerConfig = Objects.requireNonNull(appsIndexerConfig);
@@ -104,7 +103,7 @@ public final class AppsIndexerImpl implements Closeable {
         long beforePackageManagerTimestamp = SystemClock.elapsedRealtime();
         PackageManager packageManager = mContext.getPackageManager();
         Map<PackageInfo, ResolveInfos> packagesToIndex =
-                AppsUtil.getPackagesToIndex(packageManager);
+                AppsUtil.getPackagesToIndex(mContext, packageManager);
         appsUpdateStats.mPackageManagerLatencyMillis =
                 SystemClock.elapsedRealtime() - beforePackageManagerTimestamp;
 
@@ -168,7 +167,10 @@ public final class AppsIndexerImpl implements Closeable {
                 // apps so we can check what functions are indexed in AppSearch
                 appsUpdateStats.mNumberOfAppsUpdated++;
                 updatedPackageIds.add(packageInfo.packageName);
-                packagesToBeAddedOrUpdated.put(packageInfo, packagesToIndex.get(packageInfo));
+                ResolveInfos resolveInfos = packagesToIndex.get(packageInfo);
+                if (resolveInfos != null) {
+                    packagesToBeAddedOrUpdated.put(packageInfo, resolveInfos);
+                }
             } else {
                 // Not updated.
                 appsUpdateStats.mNumberOfAppsUnchanged++;
@@ -209,7 +211,8 @@ public final class AppsIndexerImpl implements Closeable {
 
         // Get all currently indexed AppFunctionStaticMetadata docs for the necessary packages.
         Map<String, Map<String, AppFunctionDocument>> appFunctionsFromAppSearch =
-                mAppSearchHelper.getAppFunctionDocumentsFromAppSearch(updatedPackageIds);
+                mAppSearchHelper.getAppFunctionDocumentsFromAppSearch(
+                        updatedPackageIds, mAppsIndexerConfig);
 
         AppFunctionDiffCalculator.AppFunctionDiff appFunctionDiff =
                 AppFunctionDiffCalculator.calculate(
