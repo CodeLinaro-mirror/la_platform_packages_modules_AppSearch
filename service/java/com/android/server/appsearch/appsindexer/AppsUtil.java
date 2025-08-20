@@ -18,6 +18,7 @@ package com.android.server.appsearch.appsindexer;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.appsearch.AppSearchEnvironmentFactory;
 import android.app.appsearch.AppSearchSchema;
 import android.app.appsearch.GenericDocument;
 import android.app.appsearch.util.LogUtil;
@@ -25,6 +26,7 @@ import android.app.usage.UsageEvents;
 import android.app.usage.UsageStatsManager;
 import android.content.ComponentName;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
@@ -35,6 +37,7 @@ import android.content.pm.Signature;
 import android.content.res.AssetManager;
 import android.content.res.Resources;
 import android.net.Uri;
+import android.os.Build;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Log;
@@ -146,11 +149,20 @@ public final class AppsUtil {
      */
     @NonNull
     public static Map<PackageInfo, ResolveInfos> getPackagesToIndex(
-            @NonNull PackageManager packageManager) {
+            @NonNull Context context, @NonNull PackageManager packageManager) {
+        Objects.requireNonNull(context);
         Objects.requireNonNull(packageManager);
-        List<PackageInfo> packageInfos =
-                packageManager.getInstalledPackages(
-                        PackageManager.GET_META_DATA | PackageManager.GET_SIGNING_CERTIFICATES);
+
+        List<PackageInfo> packageInfos;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfos =
+                    packageManager.getInstalledPackages(
+                            PackageManager.GET_META_DATA | PackageManager.GET_SIGNING_CERTIFICATES);
+        } else {
+            // P- devices do not support GET_SIGNING_CERTIFICATES. Only request GET_META_DATA here.
+            // The certificate history will be manually populated later via populateSignatures.
+            packageInfos = packageManager.getInstalledPackages(PackageManager.GET_META_DATA);
+        }
 
         Intent launchIntent = new Intent(Intent.ACTION_MAIN, null);
         launchIntent.addCategory(Intent.CATEGORY_LAUNCHER);
@@ -159,7 +171,12 @@ public final class AppsUtil {
         Map<String, ResolveInfo> packageNameToLauncher = new ArrayMap<>();
         for (int i = 0; i < activities.size(); i++) {
             ResolveInfo resolveInfo = activities.get(i);
-            packageNameToLauncher.put(resolveInfo.activityInfo.packageName, resolveInfo);
+            String packageName = resolveInfo.activityInfo.packageName;
+            if (!Flags.enableAppsIndexerUseFirstResolveInfo()
+                    || !packageNameToLauncher.containsKey(packageName)) {
+                // Only put if we haven't found one previously, or flag isn't enabled
+                packageNameToLauncher.put(packageName, resolveInfo);
+            }
         }
 
         // This is to workaround the android lint check.
@@ -193,6 +210,16 @@ public final class AppsUtil {
             }
 
             if (launchActivityResolveInfo != null || appFunctionServiceInfo != null) {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+                    // Populate signatures for P- devices.
+                    try {
+                        AppSearchEnvironmentFactory.getEnvironmentInstance()
+                                .populateSignatures(context, packageInfo);
+                    } catch (PackageManager.NameNotFoundException e) {
+                        // Skip the package if signatures can't be populated.
+                        continue;
+                    }
+                }
                 packagesToIndex.put(packageInfo, builder.build());
             }
         }
@@ -389,24 +416,32 @@ public final class AppsUtil {
     @Nullable
     public static byte[] getCertificate(@NonNull PackageInfo packageInfo) {
         Objects.requireNonNull(packageInfo);
-        if (packageInfo.signingInfo == null) {
-            if (LogUtil.DEBUG) {
-                Log.d(TAG, "Signing info not found for package: " + packageInfo.packageName);
+
+        Signature[] signatures = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            if (packageInfo.signingInfo == null) {
+                if (LogUtil.DEBUG) {
+                    Log.d(TAG, "Signing info not found for package: " + packageInfo.packageName);
+                }
+                return null;
             }
-            return null;
+            signatures = packageInfo.signingInfo.getSigningCertificateHistory();
+        } else {
+            // Use the legacy signatures field for P- devices.
+            signatures = packageInfo.signatures;
         }
-        MessageDigest md;
-        try {
-            md = MessageDigest.getInstance("SHA256");
-        } catch (NoSuchAlgorithmException e) {
-            return null;
-        }
-        Signature[] signatures = packageInfo.signingInfo.getSigningCertificateHistory();
+
         if (signatures == null || signatures.length == 0) {
             return null;
         }
-        md.update(signatures[0].toByteArray());
-        return md.digest();
+
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA256");
+            md.update(signatures[0].toByteArray());
+            return md.digest();
+        } catch (NoSuchAlgorithmException e) {
+            return null;
+        }
     }
 
     /**
@@ -449,7 +484,7 @@ public final class AppsUtil {
         }
         String applicationDisplayName =
                 launchActivityResolveInfo.loadLabel(packageManager).toString();
-        if (TextUtils.isEmpty(applicationDisplayName)) {
+        if (TextUtils.isEmpty(applicationDisplayName) && packageInfo.applicationInfo != null) {
             applicationDisplayName = packageInfo.applicationInfo.className;
         }
         builder.setDisplayName(applicationDisplayName);
@@ -458,12 +493,39 @@ public final class AppsUtil {
         if (iconUri != null) {
             builder.setIconUri(iconUri);
         }
+
         String applicationLabel =
                 packageManager.getApplicationLabel(packageInfo.applicationInfo).toString();
-        if (!applicationDisplayName.equals(applicationLabel)) {
-            // This can be different from applicationDisplayName, and should be indexed
-            builder.setAlternateNames(applicationLabel);
+        if (Flags.enableAppsIndexerUseFirstResolveInfo()) {
+            // A package may have multiple ResolveInfos, and these can have different labels. All of
+            // these labels should be added to alternate names if they are different from the
+            // display name to better support matching.
+            List<String> alternateNames = new ArrayList<>();
+
+            Intent launchIntent = new Intent(Intent.ACTION_MAIN, null);
+            launchIntent.addCategory(Intent.CATEGORY_LAUNCHER);
+            launchIntent.setPackage(packageInfo.packageName);
+            List<ResolveInfo> activities = packageManager.queryIntentActivities(launchIntent, 0);
+            for (int i = 0; i < activities.size(); i++) {
+                ResolveInfo resolveInfo = activities.get(i);
+                String alternateLabel = resolveInfo.loadLabel(packageManager).toString();
+                if (!applicationDisplayName.equals(alternateLabel)) {
+                    alternateNames.add(alternateLabel);
+                }
+            }
+
+            if (!applicationDisplayName.equals(applicationLabel)) {
+                // This can be different from applicationDisplayName, and should be indexed
+                alternateNames.add(applicationLabel);
+            }
+            builder.setAlternateNames(alternateNames.toArray(new String[0]));
+        } else {
+            if (!applicationDisplayName.equals(applicationLabel)) {
+                // This can be different from applicationDisplayName, and should be indexed
+                builder.setAlternateNames(applicationLabel);
+            }
         }
+
         if (launchActivityResolveInfo.activityInfo.name != null) {
             builder.setClassName(launchActivityResolveInfo.activityInfo.name);
         }

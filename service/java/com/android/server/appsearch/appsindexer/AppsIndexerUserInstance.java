@@ -25,6 +25,7 @@ import android.app.appsearch.AppSearchEnvironmentFactory;
 import android.app.appsearch.exceptions.AppSearchException;
 import android.content.Context;
 import android.os.Build;
+import android.os.LocaleList;
 import android.os.SystemClock;
 import android.provider.DeviceConfig;
 import android.provider.DeviceConfig.OnPropertiesChangedListener;
@@ -69,7 +70,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class AppsIndexerUserInstance {
 
-    private static final String TAG = "AppSearchAppsIndexerUserInst";
+    private static final String TAG = "AppSearchAppIndxrUsrInst";
 
     private final File mDataDir;
     // While AppsIndexerSettings is not thread safe, it is only accessed through a single-threaded
@@ -371,6 +372,22 @@ public final class AppsIndexerUserInstance {
 
             boolean isOtaUpdate = checkForOtaUpdate(sortedFingerprintedPartitions);
 
+            boolean isFullUpdateRequired = isAppIndexerUpdated || isOtaUpdate;
+
+            boolean isLocaleUpdate = false;
+            String currentLocaleCode = null;
+            if (Flags.enableAppsIndexerLocaleChangeFullUpdate()) {
+                LocaleList localeList = mContext.getResources().getConfiguration().getLocales();
+                if (!localeList.isEmpty()) {
+                    currentLocaleCode = localeList.get(0).getLanguage();
+
+                    // Only if it's not empty will we initiate a locale change triggered update
+                    isLocaleUpdate = !mSettings.getPreviousLocaleCode().equals(currentLocaleCode);
+                }
+
+                isFullUpdateRequired |= isLocaleUpdate;
+            }
+
             if (firstRun) {
                 if (Flags.enableAppsIndexerCheckPriorAttempt()) {
                     // Special "firstRun" case.
@@ -393,20 +410,22 @@ public final class AppsIndexerUserInstance {
 
                 // Check if there was a previous successful run and AppSearch or system image wasn't
                 // updated since.
-                if (mSettings.getLastUpdateTimestampMillis() != 0
-                        && !isAppIndexerUpdated
-                        && !isOtaUpdate) {
+                if (mSettings.getLastUpdateTimestampMillis() != 0 && !isFullUpdateRequired) {
                     return;
                 }
             }
 
             mAppsIndexerImpl.doUpdateIncrementalPut(
-                    mSettings,
-                    appsUpdateStats,
-                    /* isFullUpdateRequired= */ isAppIndexerUpdated || isOtaUpdate);
+                    mSettings, appsUpdateStats, isFullUpdateRequired);
             if (isOtaUpdate) {
                 mSettings.setLastPartitionFingerprintsSortedByPartitionName(
                         sortedFingerprintedPartitions);
+            }
+
+            if (Flags.enableAppsIndexerLocaleChangeFullUpdate()) {
+                if (isLocaleUpdate && currentLocaleCode != null) {
+                    mSettings.setPreviousLocaleCode(currentLocaleCode);
+                }
             }
 
             mSettings.persist();

@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+// @exportToGMSCore:skipFile()
 package android.app.appsearch;
 
 import static android.app.appsearch.AppSearchResult.RESULT_INTERNAL_ERROR;
@@ -1345,12 +1345,34 @@ public final class AppSearchSession implements Closeable {
                         CountDownLatch getSchemaLatch = new CountDownLatch(1);
                         AtomicReference<AppSearchResult<GetSchemaResponse>> getSchemaResultRef =
                                 new AtomicReference<>();
-                        getSchema(
-                                callbackExecutor,
-                                (result) -> {
-                                    getSchemaResultRef.set(result);
-                                    getSchemaLatch.countDown();
-                                });
+                        if (Flags.enableSchemaMigrationExecutorDeadLockFix()) {
+                            mService.getSchema(
+                                    new GetSchemaAidlRequest(
+                                            mCallerAttributionSource,
+                                            mCallerAttributionSource.getPackageName(),
+                                            mDatabaseName,
+                                            mUserHandle,
+                                            /* binderCallStartTimeMillis= */ SystemClock
+                                                    .elapsedRealtime(),
+                                            /* isForEnterprise= */ false),
+                                    new AppSearchResultCallback<GetSchemaResponse>() {
+                                        @Override
+                                        public void onResult(
+                                                @NonNull
+                                                        AppSearchResult<GetSchemaResponse> result) {
+                                            getSchemaResultRef.set(result);
+                                            getSchemaLatch.countDown();
+                                        }
+                                    });
+                        } else {
+                            getSchema(
+                                    callbackExecutor,
+                                    (result) -> {
+                                        getSchemaResultRef.set(result);
+                                        getSchemaLatch.countDown();
+                                    });
+                        }
+
                         getSchemaLatch.await();
                         AppSearchResult<GetSchemaResponse> getSchemaResult =
                                 getSchemaResultRef.get();

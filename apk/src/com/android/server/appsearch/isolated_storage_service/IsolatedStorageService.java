@@ -229,12 +229,20 @@ public class IsolatedStorageService extends Service {
                         TAG,
                         "expected config is not compatible with the running config. Recreating"
                                 + " VM");
-                deleteVm(vmm, VM_NAME);
+                deleteVmByName(vmm, VM_NAME);
                 return vmm.getOrCreate(VM_NAME, config);
             }
             return vm;
         } catch (VirtualMachineException e) {
-            Log.e(TAG, "Failed to get or create virtual machine " + VM_NAME, e);
+            // TODO(b/437160991): remove once VirtualMachineManager.getOrCreate is properly
+            //  handling creation failures.
+            if (e.getMessage().contains("Failed to read VM config from file")
+                    || e.getMessage().contains("Persisted VM config is invalid")) {
+                Log.wtf(TAG, "Deleting the vm to recover from vm config failures", e);
+                deleteVmByName(vmm, VM_NAME);
+            } else {
+                Log.wtf(TAG, "Failed to get or create virtual machine " + VM_NAME, e);
+            }
             return null;
         } catch (IllegalArgumentException
                 | IllegalStateException
@@ -277,13 +285,7 @@ public class IsolatedStorageService extends Service {
     @GuardedBy("mLock")
     private void deleteCurrentVmLocked(@Nullable String vmErrorMessage) {
         Log.i(TAG, "Deleting current VM...");
-        Context context = createDeviceProtectedStorageContext();
-        VirtualMachineManager vmm = context.getSystemService(VirtualMachineManager.class);
-        if (vmm == null) {
-            Log.e(TAG, "Unable to get VirtualMachineManager");
-            return;
-        }
-        if (deleteVm(vmm, VM_NAME)) {
+        if (deleteVmByName(VM_NAME)) {
             if (vmErrorMessage != null) {
                 Log.wtf(TAG, vmErrorMessage);
             } else {
@@ -296,17 +298,44 @@ public class IsolatedStorageService extends Service {
         }
     }
 
+    private boolean deleteCurrentVmIfExists() throws NullPointerException, VirtualMachineException {
+        Context context = createDeviceProtectedStorageContext();
+        VirtualMachineManager vmm = context.getSystemService(VirtualMachineManager.class);
+        if (vmm == null) {
+            Log.e(TAG, "Unable to get VirtualMachineManager");
+            throw new NullPointerException("Unable to get VirtualMachineManager");
+        }
+        if (vmm.get(VM_NAME) == null) {
+            Log.i(TAG, "VM " + VM_NAME + " doesn't exist");
+            return true;
+        }
+        return deleteVmByName(vmm, VM_NAME);
+    }
+
+    /** Delete old CE VMs. */
     private void deleteOldVms() {
         VirtualMachineManager vmm = getSystemService(VirtualMachineManager.class);
         if (vmm == null) {
             Log.e(TAG, "Unable to get VirtualMachineManager");
             return;
         }
-        deleteVm(vmm, "isolated_storage_service_vm");
-        deleteVm(vmm, "isolated_storage_service2_vm");
+        deleteVmByName(vmm, "isolated_storage_service_vm");
+        deleteVmByName(vmm, "isolated_storage_service2_vm");
     }
 
-    private boolean deleteVm(VirtualMachineManager vmm, String name) {
+    /** Deletes DE VM by name. */
+    private boolean deleteVmByName(String name) {
+        Context context = createDeviceProtectedStorageContext();
+        VirtualMachineManager vmm = context.getSystemService(VirtualMachineManager.class);
+        if (vmm == null) {
+            Log.e(TAG, "Unable to get VirtualMachineManager");
+            return false;
+        }
+        return deleteVmByName(vmm, name);
+    }
+
+    /** Deletes VM by name. */
+    private boolean deleteVmByName(VirtualMachineManager vmm, String name) {
         try {
             vmm.delete(name);
         } catch (VirtualMachineException e) {
@@ -536,6 +565,15 @@ public class IsolatedStorageService extends Service {
                 throw new RemoteException(e.getMessage());
             }
             return VM_START_STATUS_SUCCESS;
+        }
+
+        @Override
+        public boolean deleteVm() throws RemoteException {
+            try {
+                return deleteCurrentVmIfExists();
+            } catch (Exception e) {
+                throw new RemoteException(e.getMessage());
+            }
         }
 
         @Override

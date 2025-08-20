@@ -86,6 +86,21 @@ public class DataMigrationUtil {
         return icingVersion.exists();
     }
 
+    /** Checks if the migration status file exists. */
+    public static boolean migrationStatusFileExists(
+            @NonNull UserHandle userHandle, @NonNull File appSearchDir) {
+        try {
+            File icingMigrationStatus = new File(appSearchDir, DATA_MIGRATION_STATUS_FILE);
+            return icingMigrationStatus.exists();
+        } catch (Exception e) {
+            Log.e(
+                    TAG,
+                    "Exception thrown while checking migration status " + "file for " + userHandle,
+                    e);
+        }
+        return false;
+    }
+
     /** deletes the migration status file if it exists. */
     public static void deleteMigrationStatus(
             @NonNull UserHandle userHandle,
@@ -106,9 +121,17 @@ public class DataMigrationUtil {
         }
     }
 
-    /** creates the migration status file. */
-    public static void createMigrationStatus(@NonNull File appSearchDir,
-            @Nullable DataMigrationStats migrationStats) {
+    /**
+     * Writes the migration status file.
+     *
+     * <p>The status file will be created if it doesn't exist.
+     *
+     * @param appSearchDir The directory where the migration status file should be created.
+     * @param migrationStats The migration stats to be written to the file. If null, the write will
+     *     be skipped.
+     */
+    public static void writeMigrationStatus(
+            @NonNull File appSearchDir, @Nullable DataMigrationStats migrationStats) {
         try {
             // TODO(b/407815165) right now we just create this file
             //  to mark migration done successfully.
@@ -124,9 +147,7 @@ public class DataMigrationUtil {
                 IndexerSettings.writeBundle(icingMigrationStatus, migrationStats.getBundle());
             }
         } catch (IOException e) {
-            Log.e(TAG,
-                    "Fail to create marker file to mark "
-                            + "data migration done.", e);
+            Log.e(TAG, "Failed to write migration status file", e);
         }
     }
 
@@ -385,7 +406,9 @@ public class DataMigrationUtil {
             if (dataMigrationStatusFile.exists()) {
                 try {
                     PersistableBundle bundle = IndexerSettings.readBundle(dataMigrationStatusFile);
-                    prevDataMigrationStats.setBundle(bundle);
+                    if (!bundle.isEmpty()) {
+                        prevDataMigrationStats.setBundle(bundle);
+                    }
                 } catch (Exception e) {
                     Log.e(TAG, "Fail to read previous data migration stats.", e);
                 }
@@ -411,7 +434,7 @@ public class DataMigrationUtil {
                     .getResultCode();
         } finally {
             // Always dump the migration stats if method gets called.
-            DataMigrationUtil.createMigrationStatus(appSearchDir, migrationStats);
+            DataMigrationUtil.writeMigrationStatus(appSearchDir, migrationStats);
 
             if (logger != null) {
                 int totalLatencyMillis =

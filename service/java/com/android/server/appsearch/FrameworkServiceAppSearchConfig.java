@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+// @exportToGMSCore:skipFile()
 package com.android.server.appsearch;
 
 import static com.android.server.appsearch.isolated_storage_service.IsolatedStorageServiceManager.DEFAULT_MAX_PAGE_BYTES_LIMIT_FOR_ISOLATED_STORAGE;
@@ -334,7 +334,7 @@ public final class FrameworkServiceAppSearchConfig implements ServiceAppSearchCo
     public int getCachedSamplingIntervalDefault() {
         synchronized (mLock) {
             throwIfClosedLocked();
-            return mBundleLocked.getInt(KEY_SAMPLING_INTERVAL_DEFAULT, DEFAULT_SAMPLING_INTERVAL);
+            return mBundleLocked.getInt(KEY_SAMPLING_INTERVAL_DEFAULT, defaultSamplingInterval());
         }
     }
 
@@ -853,7 +853,7 @@ public final class FrameworkServiceAppSearchConfig implements ServiceAppSearchCo
             case KEY_SAMPLING_INTERVAL_FOR_GLOBAL_SEARCH_STATS:
             case KEY_SAMPLING_INTERVAL_FOR_OPTIMIZE_STATS:
                 synchronized (mLock) {
-                    mBundleLocked.putInt(key, properties.getInt(key, DEFAULT_SAMPLING_INTERVAL));
+                    mBundleLocked.putInt(key, properties.getInt(key, defaultSamplingInterval()));
                 }
                 break;
             case KEY_LIMIT_CONFIG_MAX_DOCUMENT_SIZE_BYTES:
