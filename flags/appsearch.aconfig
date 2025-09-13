@@ -839,3 +839,44 @@ flag {
     description: "Enable portable-file-backed-proto-log maintaining a buffer for decompression rather than allocating new ones."
     bug: "435754056"
 }
+
+flag {
+    name: "enable_throttling_check_optimize_info"
+    namespace: "appsearch"
+    description: "Reduces the number of times we check optimize info."
+    bug: "435251329"
+}
+
+flag {
+    name: "enable_schema_type_id_optimization"
+    namespace: "appsearch"
+    description: "When enabled, the type-ids of existing types will be preserved when possible."
+    bug: "434218554"
+}
+
+flag {
+    name: "enable_apps_indexer_multilingual_names"
+    namespace: "appsearch"
+    description: "Gets labels across all languages for an app and adds them to alternate names"
+    bug: "441550876"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "enable_apps_indexer_platform_logger"
+    namespace: "appsearch"
+    description: "Logs AppUpdateStats from PlatformLogger after calling shouldLogForTypeLocked."
+    bug: "413737868"
+}
+
+flag {
+    name: "disable_action_package_removed_pruning"
+    namespace: "appsearch"
+    description: "Kill switch to stop handling action_package_removed intents with REPLACING and DATA_REMOVED as package uninstalls."
+    bug: "443737331"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
