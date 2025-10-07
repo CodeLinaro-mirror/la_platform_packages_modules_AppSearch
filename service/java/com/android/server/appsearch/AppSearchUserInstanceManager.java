@@ -35,8 +35,8 @@ import com.android.appsearch.flags.Flags;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.appsearch.external.localstorage.AppSearchImpl;
-import com.android.server.appsearch.external.localstorage.stats.CallStats;
 import com.android.server.appsearch.external.localstorage.stats.InitializeStats;
+import com.android.server.appsearch.external.localstorage.stats.CallStats;
 import com.android.server.appsearch.external.localstorage.visibilitystore.VisibilityChecker;
 import com.android.server.appsearch.isolated_storage_service.DataMigrationUtil;
 import com.android.server.appsearch.isolated_storage_service.IcingSearchEngine;
@@ -174,6 +174,47 @@ public final class AppSearchUserInstanceManager {
     }
 
     /**
+     * Cancels {@link AppSearchUserInstance} creation for the given user.
+     *
+     * <p>This will NOT remove the future from the map of futures instance. Use {@link
+     * AppSearchUserInstanceManager#closeAndRemoveUserInstanceFuture(UserHandle, boolean)} to remove
+     * futures instances.
+     *
+     * @param userHandle The user whose instance creation should be cancelled.
+     */
+    public void cancelUserCreation(UserHandle userHandle) {
+        Objects.requireNonNull(userHandle);
+        Future<AppSearchUserInstance> instanceFuture;
+        mFutureInstanceMapLock.lock();
+        try {
+            instanceFuture = mFutureInstancesLocked.get(userHandle);
+        } finally {
+            mFutureInstanceMapLock.unlock();
+        }
+        if (instanceFuture == null) {
+            Log.w(
+                    TAG,
+                    "Unable to cancel user instance creation for: "
+                            + userHandle
+                            + ". Instance does not exist.");
+            return;
+        }
+        if (!instanceFuture.cancel(/* mayInterruptIfRunning= */ true)) {
+            if (instanceFuture.isDone()) {
+                if (LogUtil.INFO) {
+                    Log.i(
+                            TAG,
+                            "Unable to cancel user instance creation for: "
+                                    + userHandle
+                                    + ". Future creation has already been stopped.");
+                }
+            } else {
+                Log.e(TAG, "Unable to cancel user instance creation for: " + userHandle);
+            }
+        }
+    }
+
+    /**
      * Gets an {@link AppSearchUserInstance} for the given user.
      *
      * <p>This method should only be called by an initialized SearchSession, which has already
@@ -297,8 +338,10 @@ public final class AppSearchUserInstanceManager {
                         .getAppSearchDir(userContext, userHandle);
         File icingDir = new File(appSearchDir, "icing");
         IcingSearchEngineInterface icingInstance = null;
-        if (isolatedStorageServiceManager != null
-                && IsolatedStorageServiceManager.isUserAllowed(userHandle)) {
+        boolean isVMEnabledForUser =
+                isolatedStorageServiceManager != null
+                        && IsolatedStorageServiceManager.isUserAllowed(userHandle);
+        if (isVMEnabledForUser) {
             if (LogUtil.INFO) {
                 Log.i(
                         TAG,
@@ -319,9 +362,21 @@ public final class AppSearchUserInstanceManager {
                         TAG,
                         "Creating new AppSearch instance for " + userHandle + " at: " + icingDir);
             }
-            // Data is stored in host. We need to delete the migration status file
-            // so next migration can run.
-            DataMigrationUtil.deleteMigrationStatus(userHandle, appSearchDir);
+            // When isolated storage is enabled, the migration file is always created even if the
+            // migration doesn't need to run, so it can be used to check whether isolated storage
+            // was used before. We need to clean up isolated storage if it was used before but is
+            // turned off now.
+            if (isolatedStorageServiceManager == null
+                    && IsolatedStorageServiceManager.isUserAllowed(userHandle)
+                    && IsolatedStorageServiceManager.deviceSupportsVmsAndNewApis(userContext)
+                    && DataMigrationUtil.migrationStatusFileExists(userHandle, appSearchDir)) {
+                IsolatedStorageServiceManager.cleanUp(
+                        userContext,
+                        unused ->
+                                DataMigrationUtil.deleteMigrationStatus(userHandle, appSearchDir));
+            } else {
+                DataMigrationUtil.deleteMigrationStatus(userHandle, appSearchDir);
+            }
         }
         VisibilityChecker visibilityCheckerImpl =
                 AppSearchComponentFactory.createVisibilityCheckerInstance(userContext);
@@ -338,6 +393,7 @@ public final class AppSearchUserInstanceManager {
                             icingDir,
                             config,
                             initStatsBuilder,
+                            /* callStatsBuilder= */ null,
                             visibilityCheckerImpl,
                             frameworkRevocableFileDescriptorStore,
                             icingInstance,
@@ -352,18 +408,18 @@ public final class AppSearchUserInstanceManager {
         } catch (AppSearchException e) {
             AppSearchResult<Void> failedResult = throwableToFailedResult(e);
             statusCode = failedResult.getResultCode();
+            Log.wtf(TAG, "Failed to create AppSearch instance: ", e);
             if (Flags.enableCloseAppsearchOnCreationFailure() && appSearchImpl != null) {
                 // If we've created the instance, but encountered some issue.
                 // Close this instance so that we clean up it's resources.
-                Log.e(TAG, "Failed to create AppSearch instance: ", e);
                 appSearchImpl.close();
             }
             throw e;
         } catch (Exception e) {
+            Log.wtf(TAG, "Failed to create AppSearch instance: ", e);
             if (Flags.enableCloseAppsearchOnCreationFailure() && appSearchImpl != null) {
                 // If we've created the instance, but encountered some issue.
                 // Close this instance so that we clean up it's resources.
-                Log.e(TAG, "Failed to create AppSearch instance: ", e);
                 appSearchImpl.close();
             }
             throw e;
@@ -642,8 +698,43 @@ public final class AppSearchUserInstanceManager {
             Log.e(TAG, "Failed to initialize IsolatedStorageService", e);
         }
 
-        if (config.disableIsolatedStorageMigration()
-                || !DataMigrationUtil.needDataMigration(userContext, userHandle)) {
+        final File appSearchDir =
+                AppSearchEnvironmentFactory.getEnvironmentInstance()
+                        .getAppSearchDir(userContext, userHandle);
+        // Check whether this is the first time VM is booted after the feature is enabled.
+        boolean vmFirstRun = true;
+        if (DataMigrationUtil.migrationStatusFileExists(userHandle, appSearchDir)) {
+            vmFirstRun = false;
+        } else {
+            // We always create the migration file if vm is created. It will be empty until data
+            // migration actually runs(migration might not needed so it will remain empty). With
+            // this file created, it can help us to remove the vm if
+            // it gets disabled. During startup, we can check if this file exists, and call vm
+            // removal if it does.
+            DataMigrationUtil.writeMigrationStatus(appSearchDir, /* migrationStats= */ null);
+        }
+
+        if (!DataMigrationUtil.needDataMigration(userContext, userHandle)) {
+            // Data migration is not needed. But we still want to log an entry to
+            // indicate that data migration is correctly skipped.
+            AppSearchUserInstance instance = getUserInstanceOrNull(userHandle);
+            if (vmFirstRun && instance != null && instance.getLogger() != null) {
+                // Skipped is effectively doing migration with 0 data.
+                CallStats.Builder callStatsBuilder =
+                        new CallStats.Builder()
+                                .setStatusCode(AppSearchResult.RESULT_OK)
+                                // We re-purpose this to be the counter for previous runs.
+                                .setTotalLatencyMillis(0)
+                                .setEstimatedBinderLatencyMillis(0)
+                                .setCallType(
+                                        CallStats
+                                                .INTERNAL_CALL_TYPE_ISOLATED_STORAGE_DATA_MIGRATION)
+                                .setLaunchVMEnabled(true)
+                                .setNumOperationsSucceeded(0)
+                                .setNumOperationsFailed(0);
+                instance.getLogger().logStats(callStatsBuilder.build());
+            }
+            Log.i(TAG, "Data migration is not needed.");
             return isolatedIcingInterface;
         }
 
@@ -663,47 +754,21 @@ public final class AppSearchUserInstanceManager {
                                     // grab ReadWrite lock there once multi-threading is enabled.
                                     executorManager.executeLambdaForUserNoCallbackAsync(
                                             userHandle,
+                                            /* isReadOnly= */ false,
                                             () -> {
-                                                // TODO(b/407815165) we should move this outside so
-                                                //  it will include executor waiting time. And we
-                                                //  can add execution_latency for migration later.
-                                                long totalLatencyStartTimeMillis =
-                                                        SystemClock.elapsedRealtime();
-                                                @AppSearchResult.ResultCode int statusCode =
-                                                        RESULT_OK;
-
                                                 AppSearchUserInstance instance =
                                                         getUserInstanceOrNull(userHandle);
-                                                try {
+                                                if (instance != null) {
+                                                    // TODO(b/407815165) we should move this outside
+                                                    //  so it will include executor waiting time.
+                                                    //  And we can add execution_latency for
+                                                    //  migration later.
                                                     DataMigrationUtil.runDataMigrationForUser(
                                                             userContext,
                                                             userHandle,
                                                             instance.getAppSearchImpl(),
-                                                            isolatedIcingInterface);
-                                                } catch (Exception e) {
-                                                    Log.e(TAG, "Fail to migrate the data.", e);
-                                                    statusCode = AppSearchResult
-                                                            .throwableToFailedResult(e)
-                                                            .getResultCode();
-                                                } finally {
-                                                    if (instance != null
-                                                            && instance.getLogger() != null) {
-                                                        int totalLatencyMillis =
-                                                                (int) (SystemClock.elapsedRealtime()
-                                                                        - totalLatencyStartTimeMillis);
-                                                        instance.getLogger().logStats(
-                                                                new CallStats.Builder()
-                                                                        .setStatusCode(statusCode)
-                                                                        .setCallReceivedTimestampMillis(
-                                                                                totalLatencyStartTimeMillis)
-                                                                        .setTotalLatencyMillis(
-                                                                                totalLatencyMillis)
-                                                                        .setCallType(
-                                                                                CallStats.INTERNAL_CALL_TYPE_ISOLATED_STORAGE_DATA_MIGRATION)
-                                                                        .setLaunchVMEnabled(
-                                                                                instance.isVMEnabled())
-                                                                        .build());
-                                                    }
+                                                            isolatedIcingInterface,
+                                                            instance.getLogger());
                                                 }
                                             });
                                 },

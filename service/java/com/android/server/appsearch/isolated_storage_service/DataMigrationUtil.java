@@ -15,17 +15,27 @@
  */
 package com.android.server.appsearch.isolated_storage_service;
 
+import static android.app.appsearch.AppSearchResult.RESULT_OK;
+
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.app.appsearch.AppSearchEnvironmentFactory;
 import android.app.appsearch.AppSearchResult;
 import android.app.appsearch.exceptions.AppSearchException;
 import android.app.appsearch.util.LogUtil;
 import android.content.Context;
+import android.os.PersistableBundle;
+import android.os.SystemClock;
 import android.os.UserHandle;
+import android.util.ArraySet;
 import android.util.Log;
 
 import com.android.server.appsearch.external.localstorage.AppSearchImpl;
+import com.android.server.appsearch.external.localstorage.AppSearchLogger;
+import com.android.server.appsearch.external.localstorage.converter.ResultCodeToProtoConverter;
+import com.android.server.appsearch.external.localstorage.stats.CallStats;
 import com.android.server.appsearch.external.localstorage.util.PrefixUtil;
+import com.android.server.appsearch.indexer.IndexerSettings;
 
 import com.google.android.icing.IcingSearchEngineInterface;
 import com.google.android.icing.proto.BatchPutResultProto;
@@ -57,24 +67,38 @@ public class DataMigrationUtil {
 
     private static final String TAG = "IcingDataMigration";
 
-    private static final String DATA_MIGRATION_STATUS_FILE = "data_migration_status";
+    public static final String DATA_MIGRATION_STATUS_FILE = "data_migration_status";
+
+    // We try at max 3 times to do the migration if there is some failures for putDocument.
+    // For other kinds of failures, we don't respect this limit and will retry until it succeeds.
+    public static final int MAX_RETRY_TIMES_FOR_FAILED_PUTS = 3;
 
     /** Checks if data migration is needed from AppSearch to Isolated Storage. */
     // TODO(b/407815165) Right now just check if the icing/version on host exists
     //  We can persist a file to save the migration status, so dir deletion could happen later.
     public static boolean needDataMigration(
-            @NonNull Context userContext, @NonNull UserHandle userHandle) {
+            @NonNull Context userContext,
+            @NonNull UserHandle userHandle) {
         File appSearchDir =
                 AppSearchEnvironmentFactory.getEnvironmentInstance()
                         .getAppSearchDir(userContext, userHandle);
         File icingVersion = new File(appSearchDir, "icing/version");
-        File dataMigrationStatus = new File(
-                appSearchDir, DATA_MIGRATION_STATUS_FILE);
+        return icingVersion.exists();
+    }
 
-        // icing version exists means icing has been initialized and used.
-        // And if there is no migration_status file created, it means migration has not been
-        // scheduled yet, so we need to schedule a migration.
-        return icingVersion.exists() && !dataMigrationStatus.exists();
+    /** Checks if the migration status file exists. */
+    public static boolean migrationStatusFileExists(
+            @NonNull UserHandle userHandle, @NonNull File appSearchDir) {
+        try {
+            File icingMigrationStatus = new File(appSearchDir, DATA_MIGRATION_STATUS_FILE);
+            return icingMigrationStatus.exists();
+        } catch (Exception e) {
+            Log.e(
+                    TAG,
+                    "Exception thrown while checking migration status " + "file for " + userHandle,
+                    e);
+        }
+        return false;
     }
 
     /** deletes the migration status file if it exists. */
@@ -97,8 +121,17 @@ public class DataMigrationUtil {
         }
     }
 
-    /** creates the migration status file. */
-    public static void createMigrationStatus(@NonNull File appSearchDir) {
+    /**
+     * Writes the migration status file.
+     *
+     * <p>The status file will be created if it doesn't exist.
+     *
+     * @param appSearchDir The directory where the migration status file should be created.
+     * @param migrationStats The migration stats to be written to the file. If null, the write will
+     *     be skipped.
+     */
+    public static void writeMigrationStatus(
+            @NonNull File appSearchDir, @Nullable DataMigrationStats migrationStats) {
         try {
             // TODO(b/407815165) right now we just create this file
             //  to mark migration done successfully.
@@ -108,10 +141,13 @@ public class DataMigrationUtil {
             File icingMigrationStatus = new File(
                     appSearchDir, DATA_MIGRATION_STATUS_FILE);
             icingMigrationStatus.createNewFile();
+
+            // Also dump the migration stats
+            if (migrationStats != null) {
+                IndexerSettings.writeBundle(icingMigrationStatus, migrationStats.getBundle());
+            }
         } catch (IOException e) {
-            Log.e(TAG,
-                    "Fail to create marker file to mark "
-                            + "data migration done.", e);
+            Log.e(TAG, "Failed to write migration status file", e);
         }
     }
 
@@ -175,7 +211,8 @@ public class DataMigrationUtil {
             @NonNull AppSearchImpl source,
             @NonNull IcingSearchEngineInterface destination,
             boolean resetDestination,
-            boolean forceOverride) {
+            boolean forceOverride,
+            @NonNull DataMigrationStats migrationStats) {
         // TODO(b/407815165): Either remove this limit or make it configurable in future.
         int maxBytesPerPage =
                 IsolatedStorageServiceManager.DEFAULT_MAX_PAGE_BYTES_LIMIT_FOR_ISOLATED_STORAGE;
@@ -183,6 +220,7 @@ public class DataMigrationUtil {
         if (resetDestination) {
             // Clear all current data from icing instance and reinitialize it.
             ResetResultProto resetResult = destination.reset();
+            migrationStats.setResetStatus(resetResult.getStatus().getCode().getNumber());
             if (resetResult.getStatus().getCode() != StatusProto.Code.OK) {
                 return resetResult.getStatus();
             }
@@ -196,6 +234,7 @@ public class DataMigrationUtil {
             rawSchema = getSchemaProtoWithDatabase(rawSchema);
         }
         SetSchemaResultProto setSchemaResult = destination.setSchema(rawSchema, forceOverride);
+        migrationStats.setSetSchemaStatus(setSchemaResult.getStatus().getCode().getNumber());
         if (setSchemaResult.getStatus().getCode() != StatusProto.Code.OK) {
             return setSchemaResult.getStatus();
         }
@@ -224,6 +263,7 @@ public class DataMigrationUtil {
                                 .setNumPerPage(95)
                                 .setNumToScore(Integer.MAX_VALUE)
                                 .build());
+        migrationStats.setQueryStatus(searchResult.getStatus().getCode().getNumber());
         if (searchResult.getStatus().getCode() != StatusProto.Code.OK) {
             return searchResult.getStatus();
         }
@@ -234,7 +274,10 @@ public class DataMigrationUtil {
         //
         // TODO(b/407815165) Add exception handling for any exceptions during put.
         long nextPageToken = searchResult.getNextPageToken();
-        long totalDocuments = 0L;
+        ArraySet<Integer> putStatusCodes = new ArraySet<>();
+        long totalDocsSucceeded = 0L;
+        long totalDocsFailed = 0L;
+        StatusProto.Code lastFailedPutCode = StatusProto.Code.OK;
         while (searchResult != null && searchResult.getResultsCount() > 0) {
             PutDocumentRequest.Builder requestBuilder = PutDocumentRequest.newBuilder();
             for (int i = 0; i < searchResult.getResultsCount(); ++i) {
@@ -244,24 +287,56 @@ public class DataMigrationUtil {
             // TODO(b/407815165) Either return error if some put fails (if we cannot tolerate data
             //  loss) or save IDs for documents that failed to index in order to retry / log.
             if (batchPutResult.getStatus().getCode() != StatusProto.Code.OK) {
+                lastFailedPutCode = batchPutResult.getStatus().getCode();
+                putStatusCodes.add(lastFailedPutCode.getNumber());
                 Log.w(
                         TAG,
                         "Error calling batchPut during data migration "
                                 + batchPutResult.getStatus().getMessage());
             }
-            totalDocuments += searchResult.getResultsCount();
+            int count = batchPutResult.getPutResultProtosCount();
+            for (int i = 0; i < count; ++i) {
+                StatusProto putResult = batchPutResult.getPutResultProtos(i).getStatus();
+                putStatusCodes.add(putResult.getCode().getNumber());
+                if (putResult.getCode() != StatusProto.Code.OK) {
+                    lastFailedPutCode = putResult.getCode();
+                    ++totalDocsFailed;
+                } else {
+                    ++totalDocsSucceeded;
+                }
+            }
             searchResult = source.rawGetNextPage(nextPageToken);
         }
-        Log.i(TAG, "Successfully migrated " + totalDocuments + " documents");
+        Log.i(TAG, "Successfully migrated " + totalDocsSucceeded + " documents");
+        Log.i(TAG, "Failed to migrate " + totalDocsFailed + " documents");
+        if (!putStatusCodes.isEmpty()) {
+            int[] statusCodes = new int[putStatusCodes.size()];
+            int i = 0;
+            for (Integer code : putStatusCodes) {
+                statusCodes[i++] = code;
+            }
+            migrationStats.setPutStatus(statusCodes);
+        }
+        migrationStats.setNumberOfDocsSucceeded(totalDocsSucceeded);
+        migrationStats.setNumberOfDocsFailed(totalDocsFailed);
+
+        // Check if we want to retry for failed puts
+        int totalTriedTimes = migrationStats.getDataMigrationRunCounter();
+        if (lastFailedPutCode != StatusProto.Code.OK
+                && totalTriedTimes < MAX_RETRY_TIMES_FOR_FAILED_PUTS) {
+            return StatusProto.newBuilder().setCode(lastFailedPutCode).build();
+        }
 
         // Step-4 Persist the change to disk.
         PersistToDiskResultProto persistResultProto = destination.persistToDisk(
                 PersistType.Code.FULL);
+        migrationStats.setFlushStatus(persistResultProto.getStatus().getCode().getNumber());
         if (persistResultProto.getStatus().getCode() != StatusProto.Code.OK) {
             Log.w(TAG, "PersistToDisk Full failed");
             return persistResultProto.getStatus();
         }
 
+        migrationStats.setDataMigrationStatus(StatusProto.Code.OK.getNumber());
         return StatusProto.newBuilder().setCode(StatusProto.Code.OK).build();
     }
 
@@ -291,6 +366,108 @@ public class DataMigrationUtil {
     }
 
     /**
+     * Runs data migration for the specified user to move data from {@code instance}
+     * to {@code isolatedIcingInterface}.
+     *
+     * <p>{@code isolatedIcingInterface} must be instantiated with all VM options enabled.
+     *
+     * @param userContext User Context
+     * @param userHandle User to run migration for
+     * @param appSearchImpl {@link AppSearchImpl} instance for the source.
+     * @param isolatedIcingInterface {@link IcingSearchEngineInterface} instance for the VM.
+     * @param logger {@link AppSearchLogger} to log the migration stats if available.
+     */
+    @NonNull
+    public static DataMigrationStats runDataMigrationForUser(
+            @NonNull Context userContext,
+            @NonNull UserHandle userHandle,
+            @NonNull AppSearchImpl appSearchImpl,
+            @NonNull IcingSearchEngineInterface isolatedIcingInterface,
+            @Nullable AppSearchLogger logger) {
+        long totalLatencyStartTimeMillis =
+                SystemClock.elapsedRealtime();
+        @AppSearchResult.ResultCode int statusCode =
+                RESULT_OK;
+        File appSearchDir =
+                AppSearchEnvironmentFactory.getEnvironmentInstance()
+                        .getAppSearchDir(userContext, userHandle);
+        DataMigrationStats migrationStats =
+                new DataMigrationStats();
+
+        int prevNumberOfMigrationRun = 0;
+        try {
+            // Check data migration file status.
+            File dataMigrationStatusFile = new File(
+                    appSearchDir,
+                    DataMigrationUtil.DATA_MIGRATION_STATUS_FILE);
+            DataMigrationStats prevDataMigrationStats = new DataMigrationStats();
+            prevDataMigrationStats.setDataMigrationRunCounter(0);
+
+            if (dataMigrationStatusFile.exists()) {
+                try {
+                    PersistableBundle bundle = IndexerSettings.readBundle(dataMigrationStatusFile);
+                    if (!bundle.isEmpty()) {
+                        prevDataMigrationStats.setBundle(bundle);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Fail to read previous data migration stats.", e);
+                }
+            }
+            prevNumberOfMigrationRun = prevDataMigrationStats.getDataMigrationRunCounter();
+            migrationStats.setDataMigrationRunCounter(
+                    prevNumberOfMigrationRun + 1);
+
+            DataMigrationUtil.runDataMigrationForUserImpl(
+                    userContext,
+                    userHandle,
+                    appSearchImpl,
+                    isolatedIcingInterface,
+                    migrationStats);
+            statusCode =
+                    ResultCodeToProtoConverter.toResultCode(
+                            StatusProto.Code.forNumber(
+                                    migrationStats.getDataMigrationStatus()));
+        } catch (Exception e) {
+            Log.e(TAG, "Fail to migrate the data.", e);
+            statusCode = AppSearchResult
+                    .throwableToFailedResult(e)
+                    .getResultCode();
+        } finally {
+            // Always dump the migration stats if method gets called.
+            DataMigrationUtil.writeMigrationStatus(appSearchDir, migrationStats);
+
+            if (logger != null) {
+                int totalLatencyMillis =
+                        (int) (SystemClock.elapsedRealtime()
+                                - totalLatencyStartTimeMillis);
+                CallStats.Builder callStatsBuilder =
+                        new CallStats.Builder()
+                                .setStatusCode(statusCode)
+                                .setCallReceivedTimestampMillis(
+                                        totalLatencyStartTimeMillis)
+                                .setTotalLatencyMillis(
+                                        totalLatencyMillis)
+                                // We re-purpose this to be the counter for previous runs.
+                                .setEstimatedBinderLatencyMillis(prevNumberOfMigrationRun)
+                                .setCallType(
+                                        CallStats
+                                                .INTERNAL_CALL_TYPE_ISOLATED_STORAGE_DATA_MIGRATION)
+                                .setLaunchVMEnabled(appSearchImpl.isVMEnabled());
+                if (migrationStats != null) {
+                    callStatsBuilder.setNumOperationsSucceeded(
+                            (int) migrationStats.getNumberOfDocsSucceeded());
+                    callStatsBuilder.setNumOperationsFailed(
+                            (int) migrationStats.getNumberOfDocsFailed());
+                }
+                logger.logStats(
+                        callStatsBuilder.build());
+            }
+        }
+
+        return migrationStats;
+    }
+
+    /**
      * Runs data migration for the specified user to move data from {@code source} to {@code dest}.
      *
      * <p>{@code dest} must be instantiated with all VM options enabled.
@@ -299,55 +476,59 @@ public class DataMigrationUtil {
      * @param userHandle User to run migration for
      * @param source {@link AppSearchImpl} instance for the source.
      * @param dest {@link IcingSearchEngineInterface} instance for the destination.
-     * @throws AppSearchException if there is any failures during migration.
+     * @param migrationStats out object to hold migration stats.
      */
-    public static void runDataMigrationForUser(
+    @NonNull
+    private static void runDataMigrationForUserImpl(
             @NonNull Context context,
             @NonNull UserHandle userHandle,
             @NonNull AppSearchImpl source,
-            @NonNull IcingSearchEngineInterface dest)
-            throws AppSearchException {
+            @NonNull IcingSearchEngineInterface dest,
+            @NonNull DataMigrationStats migrationStats) {
         InitializeResultProto initResult = dest.initialize();
+        migrationStats.setVMInitStatus(initResult.getStatus().getCode().getNumber());
         if (initResult.getStatus().getCode() != StatusProto.Code.OK) {
-            throw new AppSearchException(
-                    AppSearchResult.RESULT_INTERNAL_ERROR,
+            // TODO(b/430610163) we can dump the migration stats for failure cases.
+            Log.e(TAG,
                     "Failed to initialize Isolated Storage Icing!"
                             + " Status code: "
                             + initResult.getStatus().getCode().getNumber());
+            return;
         }
 
         // TODO(b/407815165) probably this should be moved to AppSearchImpl so lock can be
         //  grabbed there.
         StatusProto status =
                 DataMigrationUtil.copyData(source, dest,
-                        /* resetDestination= */ false, /* forceOverride= */ true);
+                        /* resetDestination= */ true,
+                        /* forceOverride= */ true,
+                        migrationStats);
+        migrationStats.setDataMigrationStatus(status.getCode().getNumber());
+
         // TODO(b/407815165) Rework those logging and put useful information in the marker file, so
         //  dumpsys can read and print those information.
         Log.i(TAG, "Data migration status: " + status);
-
         if (status.getCode() != StatusProto.Code.OK) {
-            throw new AppSearchException(
-                    AppSearchResult.RESULT_INTERNAL_ERROR,
+            Log.e(TAG,
                     "Data migration: failed with status code: "
                             + status.getCode().getNumber()
                             + ", status message: "
                             + status.getMessage());
+            return;
         }
 
-        // Switch to the isolated instance.
+        // Migration succeeded. Switch to the isolated instance.
         IcingSearchEngineInterface priorIcingSearchEngine = source.swapIcingSearchEngineLocked(
                 dest, /*isVMEnabled=*/ true);
-
-        File appSearchDir = AppSearchEnvironmentFactory
-                .getEnvironmentInstance()
-                .getAppSearchDir(context, userHandle);
-        DataMigrationUtil.createMigrationStatus(appSearchDir);
-        priorIcingSearchEngine.close();
-
         // Destroy the current instance.
+        priorIcingSearchEngine.close();
         if (LogUtil.INFO) {
             Log.i(TAG, "Data migration: wiping source directory.");
         }
+
+        File appSearchDir =
+                AppSearchEnvironmentFactory.getEnvironmentInstance()
+                        .getAppSearchDir(context, userHandle);
         File icingDir = new File(appSearchDir, "icing");
         DataMigrationUtil.wipeSourceIcingDir(icingDir);
     }

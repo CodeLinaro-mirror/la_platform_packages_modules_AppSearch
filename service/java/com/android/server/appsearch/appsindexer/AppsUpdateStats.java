@@ -25,8 +25,14 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.Set;
 
+/**
+ * A class for holding detailed stats about an AppsIndexer update.
+ *
+ * @hide
+ */
 public class AppsUpdateStats {
 
+    /** The type of update that was performed. */
     @IntDef(
             value = {
                 UNKNOWN_UPDATE_TYPE,
@@ -76,6 +82,9 @@ public class AppsUpdateStats {
 
     long mAppSearchRemoveLatencyMillis;
 
+    // Determines if a Force Update has been triggered
+    boolean mForceUpdateTriggered;
+
     /** Resets the Apps Indexer update stats. */
     public void clear() {
         mUpdateType = UNKNOWN_UPDATE_TYPE;
@@ -101,5 +110,7 @@ public class AppsUpdateStats {
         mNumberOfFunctionsUpdated = 0;
 
         mAppSearchRemoveLatencyMillis = 0;
+
+        mForceUpdateTriggered = false;
     }
 }

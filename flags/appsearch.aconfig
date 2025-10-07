@@ -720,8 +720,122 @@ flag {
 }
 
 flag {
+    name: "enable_remove_doc_count_batching_for_batch_put"
+    namespace: "appsearch"
+    description: "Remove the upper layer batching with document number to improve batchPut performance"
+    bug: "433822099"
+}
+
+flag {
     name: "enable_no_op_manual_persist"
     namespace: "appsearch"
     description: "Makes manual persist to disk calls a no-op."
     bug: "417463182"
+}
+
+flag {
+    name: "enable_separate_read_write_executors"
+    namespace: "appsearch"
+    description: "Separates executors into read and write threadpools"
+    bug: "382519820"
+}
+
+flag {
+    name: "enable_api_call_stats_tracking"
+    namespace: "appsearch"
+    description: "the number of the last API calls appsearch is tracking."
+    bug: "246778338"
+}
+
+flag {
+    name: "enable_passing_filter_to_children"
+    namespace: "appsearch"
+    description: "Enables passing down filters to child iterators for optimized DocHitInfo retrieval"
+    bug: "395156795"
+}
+
+flag {
+    name: "enable_reduce_check_optimize_for_set_schema"
+    namespace: "appsearch"
+    description: "Only check optimize if we have deleted or incompatible types for setSchema, and forceOverride is true."
+    bug: "435251329"
+}
+
+flag {
+    name: "enable_remove_by_id_uses_query"
+    namespace: "appsearch"
+    description: "Enable using removeByQuery to implement removeById."
+    bug: "401245772"
+}
+
+flag {
+    name: "enable_proto_log_new_header_format"
+    namespace: "appsearch"
+    description: "Enable the new header format in PortableFileBackedProtoLog."
+    bug: "429259809"
+}
+
+flag {
+    name: "enable_higher_sampling_for_trunkfooders"
+    namespace: "appsearch"
+    description: "Enables a higher sampling rate on logs. This flag should never rollout past trunkfood FULL."
+    bug: "437386925"
+}
+
+flag {
+    name: "enable_early_set_schema_exit"
+    namespace: "appsearch"
+    description: "whether to skip interacting with icing if the set schema call is a noop."
+    bug: "436813583"
+}
+
+flag {
+    name: "enable_app_function_agent_allowlist_check"
+    namespace: "appsearch"
+    description: "Enable checking the app is in agent allowlist when deciding document visibility"
+    bug: "420892441"
+}
+
+flag {
+    name: "enable_apps_indexer_use_first_resolve_info"
+    namespace: "appsearch"
+    description: "Uses the first resolve info per package instead of the last"
+    bug: "437400697"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "enable_apps_indexer_locale_change_full_update"
+    namespace: "appsearch"
+    description: "Triggers a full update when the locale changes"
+    bug: "437400460"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+ flag {
+    name: "enable_schema_migration_executor_dead_lock_fix"
+    namespace: "appsearch"
+    description: "Enable the executor dead lock fix for the get schema call in schema migration job."
+    bug: "436282573"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "enable_embedding_iterator_v2"
+    namespace: "appsearch"
+    description: "Enable new version of the embedding iterator which has a more efficient access pattern."
+    bug: "435005853"
+}
+
+flag {
+    name: "enable_reusable_decompression_buffer"
+    namespace: "appsearch"
+    description: "Enable portable-file-backed-proto-log maintaining a buffer for decompression rather than allocating new ones."
+    bug: "435754056"
 }

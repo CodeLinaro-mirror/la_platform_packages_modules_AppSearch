@@ -64,6 +64,7 @@ import android.app.appsearch.exceptions.AppSearchException;
 import android.app.appsearch.observer.DocumentChangeInfo;
 import android.app.appsearch.observer.ObserverSpec;
 import android.app.appsearch.observer.SchemaChangeInfo;
+import android.app.appsearch.stats.BaseStats;
 import android.app.appsearch.testutil.AppSearchEmail;
 import android.app.appsearch.testutil.AppSearchTestUtils;
 import android.app.appsearch.testutil.TestObserverCallback;
@@ -81,8 +82,10 @@ import com.android.appsearch.flags.Flags;
 import com.android.server.appsearch.appsearch.proto.AndroidVOverlayProto;
 import com.android.server.appsearch.appsearch.proto.PackageIdentifierProto;
 import com.android.server.appsearch.appsearch.proto.VisibilityConfigProto;
+import com.android.server.appsearch.external.localstorage.stats.CallStats;
 import com.android.server.appsearch.external.localstorage.stats.InitializeStats;
 import com.android.server.appsearch.external.localstorage.stats.OptimizeStats;
+import com.android.server.appsearch.external.localstorage.stats.PersistToDiskStats;
 import com.android.server.appsearch.external.localstorage.stats.PutDocumentStats;
 import com.android.server.appsearch.external.localstorage.stats.QueryStats;
 import com.android.server.appsearch.external.localstorage.stats.RemoveStats;
@@ -184,6 +187,7 @@ public class AppSearchImplTest {
                         mAppSearchDir,
                         mUnlimitedConfig,
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -560,7 +564,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert a document and then remove it to generate garbage.
@@ -570,28 +575,38 @@ public class AppSearchImplTest {
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.remove(
-                "package", "database", "namespace", "id", /* removeStatsBuilder= */ null);
+                "package",
+                "database",
+                "namespace",
+                "id",
+                /* removeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // Verify there is garbage documents.
-        GetOptimizeInfoResultProto optimizeInfo = mAppSearchImpl.getOptimizeInfoResultLocked();
+        GetOptimizeInfoResultProto optimizeInfo =
+                mAppSearchImpl.getOptimizeInfoResultLocked(/* callStatsBuilder= */ null);
         assertThat(optimizeInfo.getOptimizableDocs()).isEqualTo(1);
 
         // Increase mutation counter and stop before reach the threshold
         mAppSearchImpl.checkForOptimize(
-                AppSearchImpl.CHECK_OPTIMIZE_INTERVAL - 1, /* builder= */ null);
+                AppSearchImpl.CHECK_OPTIMIZE_INTERVAL - 1,
+                /* optimizeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // Verify the optimize() isn't triggered.
-        optimizeInfo = mAppSearchImpl.getOptimizeInfoResultLocked();
+        optimizeInfo = mAppSearchImpl.getOptimizeInfoResultLocked(/* callStatsBuilder= */ null);
         assertThat(optimizeInfo.getOptimizableDocs()).isEqualTo(1);
 
         // Increase the counter and reach the threshold, optimize() should be triggered.
         OptimizeStats.Builder builder = new OptimizeStats.Builder();
-        mAppSearchImpl.checkForOptimize(/* mutateBatchSize= */ 1, builder);
+        mAppSearchImpl.checkForOptimize(
+                /* mutateBatchSize= */ 1, builder, /* callStatsBuilder= */ null);
 
         // Verify optimize() is triggered.
-        optimizeInfo = mAppSearchImpl.getOptimizeInfoResultLocked();
+        optimizeInfo = mAppSearchImpl.getOptimizeInfoResultLocked(/* callStatsBuilder= */ null);
         assertThat(optimizeInfo.getOptimizableDocs()).isEqualTo(0);
         assertThat(optimizeInfo.getEstimatedOptimizableBytes()).isEqualTo(0);
 
@@ -616,7 +631,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert a valid doc
@@ -627,7 +643,8 @@ public class AppSearchImplTest {
                 "database1",
                 validDoc,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query it via global query. We use the same code again later so this is to make sure we
         // have our global query configured right.
@@ -636,7 +653,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         new SearchSpec.Builder().addFilterSchemas("Type1").build(),
                         mSelfCallerAccess,
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(results.getResults()).hasSize(1);
         assertThat(results.getResults().get(0).getGenericDocument()).isEqualTo(validDoc);
 
@@ -670,6 +688,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -697,7 +716,8 @@ public class AppSearchImplTest {
                                 .getSchema(
                                         /* packageName= */ mContext.getPackageName(),
                                         /* databaseName= */ "database1",
-                                        /* callerAccess= */ mSelfCallerAccess)
+                                        /* callerAccess= */ mSelfCallerAccess,
+                                        /* callStatsBuilder= */ null)
                                 .getSchemas())
                 .isEmpty();
         results =
@@ -705,7 +725,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         new SearchSpec.Builder().addFilterSchemas("Type1").build(),
                         mSelfCallerAccess,
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(results.getResults()).isEmpty();
 
         // Make sure the index can now be used successfully
@@ -717,7 +738,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert a valid doc
@@ -726,7 +748,8 @@ public class AppSearchImplTest {
                 "database1",
                 validDoc,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query it via global query.
         results =
@@ -734,7 +757,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         new SearchSpec.Builder().addFilterSchemas("Type1").build(),
                         mSelfCallerAccess,
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(results.getResults()).hasSize(1);
         assertThat(results.getResults().get(0).getGenericDocument()).isEqualTo(validDoc);
     }
@@ -757,6 +781,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         mMockIcingSearchEngine,
@@ -788,6 +813,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         mMockIcingSearchEngine,
@@ -820,6 +846,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         mMockIcingSearchEngine,
@@ -852,6 +879,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         mMockIcingSearchEngine,
@@ -884,6 +912,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         mMockIcingSearchEngine,
@@ -922,6 +951,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         mMockIcingSearchEngine,
@@ -966,6 +996,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         mMockIcingSearchEngine,
@@ -987,6 +1018,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -1006,7 +1038,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert a valid doc
@@ -1017,7 +1050,8 @@ public class AppSearchImplTest {
                 "database1",
                 validDoc,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         // Query it via global query. We use the same code again later so this is to make sure we
         // have our global query configured right.
         SearchResultPage results =
@@ -1025,7 +1059,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         new SearchSpec.Builder().addFilterSchemas("Type1").build(),
                         mSelfCallerAccess,
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(results.getResults()).hasSize(1);
         assertThat(results.getResults().get(0).getGenericDocument()).isEqualTo(validDoc);
 
@@ -1037,18 +1072,25 @@ public class AppSearchImplTest {
                         blobDigest, mContext.getPackageName(), "database1", "namespace1");
         try (ParcelFileDescriptor writePfd =
                         mAppSearchImpl.openWriteBlob(
-                                mContext.getPackageName(), "database1", blobHandle);
+                                mContext.getPackageName(),
+                                "database1",
+                                blobHandle,
+                                /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(blobData);
             outputStream.flush();
         }
         // Commit and read the blob.
-        mAppSearchImpl.commitBlob(mContext.getPackageName(), "database1", blobHandle);
+        mAppSearchImpl.commitBlob(
+                mContext.getPackageName(), "database1", blobHandle, /* callStatsBuilder= */ null);
         byte[] readBytes = new byte[20 * 1024];
         try (ParcelFileDescriptor readPfd =
                         mAppSearchImpl.openReadBlob(
-                                mContext.getPackageName(), "database1", blobHandle);
+                                mContext.getPackageName(),
+                                "database1",
+                                blobHandle,
+                                /* callStatsBuilder= */ null);
                 InputStream inputStream = new ParcelFileDescriptor.AutoCloseInputStream(readPfd)) {
             inputStream.read(readBytes);
         }
@@ -1088,6 +1130,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -1115,7 +1158,8 @@ public class AppSearchImplTest {
                                 .getSchema(
                                         /* packageName= */ mContext.getPackageName(),
                                         /* databaseName= */ "database1",
-                                        /* callerAccess= */ mSelfCallerAccess)
+                                        /* callerAccess= */ mSelfCallerAccess,
+                                        /* callStatsBuilder= */ null)
                                 .getSchemas())
                 .isEmpty();
         results =
@@ -1123,7 +1167,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         new SearchSpec.Builder().addFilterSchemas("Type1").build(),
                         mSelfCallerAccess,
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(results.getResults()).isEmpty();
 
         // Make sure blob files are deleted.
@@ -1140,7 +1185,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert a valid doc
@@ -1149,32 +1195,41 @@ public class AppSearchImplTest {
                 "database1",
                 validDoc,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         // Query it via global query.
         results =
                 mAppSearchImpl.globalQuery(
                         /* queryExpression= */ "",
                         new SearchSpec.Builder().addFilterSchemas("Type1").build(),
                         mSelfCallerAccess,
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(results.getResults()).hasSize(1);
         assertThat(results.getResults().get(0).getGenericDocument()).isEqualTo(validDoc);
 
         // Put a blob
         try (ParcelFileDescriptor writePfd =
                         mAppSearchImpl.openWriteBlob(
-                                mContext.getPackageName(), "database1", blobHandle);
+                                mContext.getPackageName(),
+                                "database1",
+                                blobHandle,
+                                /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(blobData);
             outputStream.flush();
         }
         // Commit and read the blob.
-        mAppSearchImpl.commitBlob(mContext.getPackageName(), "database1", blobHandle);
+        mAppSearchImpl.commitBlob(
+                mContext.getPackageName(), "database1", blobHandle, /* callStatsBuilder= */ null);
         readBytes = new byte[20 * 1024];
         try (ParcelFileDescriptor readPfd =
                         mAppSearchImpl.openReadBlob(
-                                mContext.getPackageName(), "database1", blobHandle);
+                                mContext.getPackageName(),
+                                "database1",
+                                blobHandle,
+                                /* callStatsBuilder= */ null);
                 InputStream inputStream = new ParcelFileDescriptor.AutoCloseInputStream(readPfd)) {
             inputStream.read(readBytes);
         }
@@ -1199,6 +1254,7 @@ public class AppSearchImplTest {
                         mAppSearchDir,
                         mUnlimitedConfig,
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         // Initializing with a custom icing instance will cause AppSearch to assume
@@ -1208,7 +1264,8 @@ public class AppSearchImplTest {
                         icingSearchEngine,
                         ALWAYS_OPTIMIZE);
 
-        SchemaProto existingSchema = mAppSearchImpl.getSchemaProtoLocked();
+        SchemaProto existingSchema =
+                mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null);
         // Insert some schemas in 2 databases. We need to use the full SchemaProto and call Icing's
         // set schema API directly as AppSearch will use database-scoped schema operation since
         // we initialized with a custom icing instance (which AppSearch understands as having VM
@@ -1246,7 +1303,7 @@ public class AppSearchImplTest {
         // We need to get the full schema here since Icing doesn't have schema database enabled,
         // which also disables the getSchemaForPrefix API. The schema should be exactly the same
         // as what we've just set, without the database fields being populated.
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(fullSchema.getTypesList());
 
         // Reinitialize Icing and AppSearch, this time with schema database enabled.
@@ -1258,6 +1315,7 @@ public class AppSearchImplTest {
                         mAppSearchDir,
                         mUnlimitedConfig,
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         icingSearchEngine,
@@ -1320,7 +1378,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // expectedDb1Proto has changed. The proto should contain the database field.
@@ -1390,6 +1449,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         mMockIcingSearchEngine,
@@ -1408,7 +1468,12 @@ public class AppSearchImplTest {
                 new SearchSpec.Builder().setTermMatch(TermMatchType.Code.PREFIX_VALUE).build();
         SearchResultPage searchResultPage =
                 mAppSearchImpl.query(
-                        "package", "EmptyDatabase", "", searchSpec, /* logger= */ null);
+                        "package",
+                        "EmptyDatabase",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).isEmpty();
     }
 
@@ -1442,6 +1507,7 @@ public class AppSearchImplTest {
                         mAppSearchDir,
                         appSearchConfig,
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         icingSearchEngine,
@@ -1457,7 +1523,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert 12 documents
@@ -1474,7 +1541,8 @@ public class AppSearchImplTest {
                     "database1",
                     email,
                     /* sendChangeNotifications= */ false,
-                    /* logger= */ null);
+                    /* logger= */ null,
+                    /* callStatsBuilder= */ null);
         }
 
         // Search for the documents with requested page size of 5, 5 documents should be returned
@@ -1485,7 +1553,13 @@ public class AppSearchImplTest {
                         .setResultCountPerPage(5)
                         .build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(5);
         assertThat(searchResultPage.getNextPageToken())
                 .isNotEqualTo(SearchResultPage.EMPTY_PAGE_TOKEN);
@@ -1493,7 +1567,10 @@ public class AppSearchImplTest {
         // Do getNextPage. A full page of 5 results should be returned again.
         searchResultPage =
                 mAppSearchImpl.getNextPage(
-                        "package1", searchResultPage.getNextPageToken(), /* logger= */ null);
+                        "package1",
+                        searchResultPage.getNextPageToken(),
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(5);
         assertThat(searchResultPage.getNextPageToken())
                 .isNotEqualTo(SearchResultPage.EMPTY_PAGE_TOKEN);
@@ -1502,7 +1579,10 @@ public class AppSearchImplTest {
         // be invalid after this call.
         searchResultPage =
                 mAppSearchImpl.getNextPage(
-                        "package1", searchResultPage.getNextPageToken(), /* logger= */ null);
+                        "package1",
+                        searchResultPage.getNextPageToken(),
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(2);
         assertThat(searchResultPage.getNextPageToken())
                 .isEqualTo(SearchResultPage.EMPTY_PAGE_TOKEN);
@@ -1521,7 +1601,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert no documents
@@ -1536,13 +1617,20 @@ public class AppSearchImplTest {
                 resultBuilder,
                 /* sendChangeNotifications= */ false,
                 /* logger= */ null,
-                PersistType.Code.LITE);
+                PersistType.Code.LITE,
+                /* callStatsBuilder= */ null);
 
         assertThat(resultBuilder.build().getAll()).isEmpty();
         SearchSpec searchSpec =
                 new SearchSpec.Builder().setTermMatch(TermMatchType.Code.PREFIX_VALUE).build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         assertThat(searchResultPage.getResults()).isEmpty();
     }
@@ -1560,7 +1648,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert three package1 documents
@@ -1581,7 +1670,8 @@ public class AppSearchImplTest {
                 batchResultBuilder,
                 /* sendChangeNotifications= */ false,
                 /* logger= */ null,
-                PersistType.Code.LITE);
+                PersistType.Code.LITE,
+                /* callStatsBuilder= */ null);
         AppSearchBatchResult<String, Void> batchResult = batchResultBuilder.build();
 
         // Check batchResult
@@ -1592,7 +1682,13 @@ public class AppSearchImplTest {
         SearchSpec searchSpec =
                 new SearchSpec.Builder().setTermMatch(TermMatchType.Code.PREFIX_VALUE).build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         assertThat(searchResultPage.getResults()).hasSize(3);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document3);
@@ -1613,7 +1709,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert three package1 documents
@@ -1635,7 +1732,8 @@ public class AppSearchImplTest {
                 /* sendChangeNotifications= */ false,
                 /* logger= */ null,
                 // Specify UNKNOWN PersistType to indicate not to call persistToDisk at the end.
-                PersistType.Code.UNKNOWN);
+                PersistType.Code.UNKNOWN,
+                /* callStatsBuilder= */ null);
         AppSearchBatchResult<String, Void> batchResult = batchResultBuilder.build();
 
         // Check batchResult
@@ -1646,7 +1744,13 @@ public class AppSearchImplTest {
         SearchSpec searchSpec =
                 new SearchSpec.Builder().setTermMatch(TermMatchType.Code.PREFIX_VALUE).build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         assertThat(searchResultPage.getResults()).hasSize(3);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document3);
@@ -1671,7 +1775,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert package2 schema
@@ -1685,7 +1790,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert package1 document
@@ -1696,13 +1802,20 @@ public class AppSearchImplTest {
                 "database1",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // No query filters specified, package2 shouldn't be able to query for package1's documents.
         SearchSpec searchSpec =
                 new SearchSpec.Builder().setTermMatch(TermMatchType.Code.PREFIX_VALUE).build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package2", "database2", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package2",
+                        "database2",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).isEmpty();
 
         // Insert package2 document
@@ -1712,11 +1825,18 @@ public class AppSearchImplTest {
                 "database2",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // No query filters specified. package2 should only get its own documents back.
         searchResultPage =
-                mAppSearchImpl.query("package2", "database2", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package2",
+                        "database2",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document);
     }
@@ -1738,7 +1858,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert package2 schema
@@ -1752,7 +1873,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert package1 document
@@ -1763,7 +1885,8 @@ public class AppSearchImplTest {
                 "database1",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // "package1" filter specified, but package2 shouldn't be able to query for package1's
         // documents.
@@ -1773,7 +1896,13 @@ public class AppSearchImplTest {
                         .addFilterPackageNames("package1")
                         .build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package2", "database2", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package2",
+                        "database2",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).isEmpty();
 
         // Insert package2 document
@@ -1783,7 +1912,8 @@ public class AppSearchImplTest {
                 "database2",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // "package2" filter specified, package2 should only get its own documents back.
         searchSpec =
@@ -1792,7 +1922,13 @@ public class AppSearchImplTest {
                         .addFilterPackageNames("package2")
                         .build();
         searchResultPage =
-                mAppSearchImpl.query("package2", "database2", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package2",
+                        "database2",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document);
     }
@@ -1806,7 +1942,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         searchSpec,
                         new CallerAccess(/* callingPackageName= */ ""),
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).isEmpty();
     }
 
@@ -1823,6 +1960,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -1839,7 +1977,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         AppSearchSchema.StringPropertyConfig personField =
@@ -1860,7 +1999,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         List<AppSearchSchema> textSchema =
@@ -1874,7 +2014,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert package1 document
@@ -1885,7 +2026,8 @@ public class AppSearchImplTest {
                 "database1",
                 person,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Insert package2 document
         GenericDocument call =
@@ -1897,7 +2039,8 @@ public class AppSearchImplTest {
                 "database2",
                 call,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Insert package3 document
         GenericDocument text =
@@ -1909,7 +2052,8 @@ public class AppSearchImplTest {
                 "database3",
                 text,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Filter on parent spec only
         SearchSpec nested =
@@ -1927,7 +2071,11 @@ public class AppSearchImplTest {
                         .build();
         SearchResultPage searchResultPage =
                 mAppSearchImpl.globalQuery(
-                        "", searchSpec, new CallerAccess("package1"), /* logger= */ null);
+                        "",
+                        searchSpec,
+                        new CallerAccess("package1"),
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(person);
         SearchResult result = searchResultPage.getResults().get(0);
@@ -1943,7 +2091,11 @@ public class AppSearchImplTest {
                         .build();
         searchResultPage =
                 mAppSearchImpl.globalQuery(
-                        "", searchSpec, new CallerAccess("package1"), /* logger= */ null);
+                        "",
+                        searchSpec,
+                        new CallerAccess("package1"),
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(3);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(person);
         assertThat(searchResultPage.getResults().get(1).getGenericDocument()).isEqualTo(call);
@@ -1964,7 +2116,11 @@ public class AppSearchImplTest {
                         .build();
         searchResultPage =
                 mAppSearchImpl.globalQuery(
-                        "", searchSpec, new CallerAccess("package1"), /* logger= */ null);
+                        "",
+                        searchSpec,
+                        new CallerAccess("package1"),
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(3);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(person);
         assertThat(searchResultPage.getResults().get(1).getGenericDocument()).isEqualTo(call);
@@ -1982,7 +2138,11 @@ public class AppSearchImplTest {
                         .build();
         searchResultPage =
                 mAppSearchImpl.globalQuery(
-                        "", searchSpec, new CallerAccess("package1"), /* logger= */ null);
+                        "",
+                        searchSpec,
+                        new CallerAccess("package1"),
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(person);
         result = searchResultPage.getResults().get(0);
@@ -2006,6 +2166,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -2031,7 +2192,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert package2 schema
@@ -2046,7 +2208,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert package1 document
@@ -2057,7 +2220,8 @@ public class AppSearchImplTest {
                 "database1",
                 person,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument call1 =
                 new GenericDocument.Builder<>("namespace", "id1", "callSchema")
@@ -2074,7 +2238,8 @@ public class AppSearchImplTest {
                 "database1",
                 call1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Insert package2 action document
         mAppSearchImpl.putDocument(
@@ -2082,7 +2247,8 @@ public class AppSearchImplTest {
                 "database2",
                 call2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Invalid parent spec filter
         SearchSpec searchSpec =
@@ -2093,7 +2259,13 @@ public class AppSearchImplTest {
                         .setOrder(SearchSpec.ORDER_ASCENDING)
                         .build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         // Only package1 documents should be returned
         assertThat(searchResultPage.getResults()).hasSize(2);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(person);
@@ -2116,7 +2288,13 @@ public class AppSearchImplTest {
                         .setJoinSpec(join)
                         .build();
         searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Only package1 documents should be returned, for both the outer and nested searches
         assertThat(searchResultPage.getResults()).hasSize(2);
@@ -2143,7 +2321,13 @@ public class AppSearchImplTest {
                         .setJoinSpec(join)
                         .build();
         searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Package1 documents should be returned, but no packages should be joined
         assertThat(searchResultPage.getResults()).hasSize(2);
@@ -2168,7 +2352,13 @@ public class AppSearchImplTest {
                         .setJoinSpec(join)
                         .build();
         searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Only package1 documents should be returned, for both the outer and nested searches
         assertThat(searchResultPage.getResults()).hasSize(2);
@@ -2190,7 +2380,13 @@ public class AppSearchImplTest {
                         .setJoinSpec(join)
                         .build();
         searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         // Should work as expected
         assertThat(searchResultPage.getResults()).hasSize(2);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(person);
@@ -2223,7 +2419,8 @@ public class AppSearchImplTest {
                 /* visibilityConfigs= */ Collections.emptyList(),
                 /* forceOverride= */ false,
                 /* version= */ 0,
-                /* setSchemaStatsBuilder= */ null);
+                /* setSchemaStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // Insert three documents.
         GenericDocument doc1 =
@@ -2243,26 +2440,30 @@ public class AppSearchImplTest {
                 "database",
                 doc1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
                 doc2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
                 doc3,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         List<SearchSuggestionResult> suggestions =
                 mAppSearchImpl.searchSuggestion(
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "t",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).hasSize(3);
         assertThat(suggestions.get(0).getSuggestedResult()).isEqualTo("termone");
         assertThat(suggestions.get(1).getSuggestedResult()).isEqualTo("termtwo");
@@ -2274,7 +2475,8 @@ public class AppSearchImplTest {
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "t",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 2).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 2).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).hasSize(2);
         assertThat(suggestions.get(0).getSuggestedResult()).isEqualTo("termone");
         assertThat(suggestions.get(1).getSuggestedResult()).isEqualTo("termtwo");
@@ -2303,7 +2505,8 @@ public class AppSearchImplTest {
                 /* visibilityConfigs= */ Collections.emptyList(),
                 /* forceOverride= */ false,
                 /* version= */ 0,
-                /* setSchemaStatsBuilder= */ null);
+                /* setSchemaStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // Insert a document.
         GenericDocument doc1 =
@@ -2315,20 +2518,27 @@ public class AppSearchImplTest {
                 "database",
                 doc1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         List<SearchSuggestionResult> suggestions =
                 mAppSearchImpl.searchSuggestion(
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "t",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).hasSize(1);
         assertThat(suggestions.get(0).getSuggestedResult()).isEqualTo("termone");
 
         // Remove the document.
         mAppSearchImpl.remove(
-                "package", "database", "namespace", "id1", /* removeStatsBuilder= */ null);
+                "package",
+                "database",
+                "namespace",
+                "id1",
+                /* removeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now we cannot find any suggestion
         suggestions =
@@ -2336,7 +2546,8 @@ public class AppSearchImplTest {
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "t",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).isEmpty();
     }
 
@@ -2363,7 +2574,8 @@ public class AppSearchImplTest {
                 /* visibilityConfigs= */ Collections.emptyList(),
                 /* forceOverride= */ false,
                 /* version= */ 0,
-                /* setSchemaStatsBuilder= */ null);
+                /* setSchemaStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // Insert a document.
         GenericDocument doc1 =
@@ -2375,7 +2587,8 @@ public class AppSearchImplTest {
                 "database",
                 doc1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         SearchSuggestionResult tartResult =
                 new SearchSuggestionResult.Builder().setSuggestedResult("tart").build();
         SearchSuggestionResult twoResult =
@@ -2389,7 +2602,8 @@ public class AppSearchImplTest {
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "t",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).containsExactly(tartResult, twoResult, threeResult);
 
         // replace the document with two terms.
@@ -2402,7 +2616,8 @@ public class AppSearchImplTest {
                 "database",
                 replaceDocument,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now we cannot find any suggestion
         suggestions =
@@ -2410,7 +2625,8 @@ public class AppSearchImplTest {
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "t",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).containsExactly(twistResult, threeResult);
     }
 
@@ -2437,7 +2653,8 @@ public class AppSearchImplTest {
                 /* visibilityConfigs= */ Collections.emptyList(),
                 /* forceOverride= */ false,
                 /* version= */ 0,
-                /* setSchemaStatsBuilder= */ null);
+                /* setSchemaStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // Insert three documents.
         GenericDocument doc1 =
@@ -2458,19 +2675,22 @@ public class AppSearchImplTest {
                 "database",
                 doc1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
                 doc2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
                 doc3,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         List<SearchSuggestionResult> suggestions =
                 mAppSearchImpl.searchSuggestion(
@@ -2479,7 +2699,8 @@ public class AppSearchImplTest {
                         /* suggestionQueryExpression= */ "t",
                         new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10)
                                 .addFilterNamespaces("namespace1")
-                                .build());
+                                .build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).hasSize(1);
         assertThat(suggestions.get(0).getSuggestedResult()).isEqualTo("term1");
 
@@ -2490,7 +2711,8 @@ public class AppSearchImplTest {
                         /* suggestionQueryExpression= */ "t",
                         new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10)
                                 .addFilterNamespaces("namespace1", "namespace2")
-                                .build());
+                                .build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).hasSize(2);
         assertThat(suggestions.get(0).getSuggestedResult()).isEqualTo("term1");
         assertThat(suggestions.get(1).getSuggestedResult()).isEqualTo("term2");
@@ -2520,7 +2742,8 @@ public class AppSearchImplTest {
                 /* visibilityConfigs= */ Collections.emptyList(),
                 /* forceOverride= */ false,
                 /* version= */ 0,
-                /* setSchemaStatsBuilder= */ null);
+                /* setSchemaStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
         GenericDocument doc =
                 new GenericDocument.Builder<>("namespace1", "id1", "type")
                         .setPropertyString("body", "term1")
@@ -2530,42 +2753,48 @@ public class AppSearchImplTest {
                 "database",
                 doc,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         List<SearchSuggestionResult> suggestions =
                 mAppSearchImpl.searchSuggestion(
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "t:",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).isEmpty();
         suggestions =
                 mAppSearchImpl.searchSuggestion(
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "t-",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).isEmpty();
         suggestions =
                 mAppSearchImpl.searchSuggestion(
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "t  ",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).isEmpty();
         suggestions =
                 mAppSearchImpl.searchSuggestion(
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "{t}",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).isEmpty();
         suggestions =
                 mAppSearchImpl.searchSuggestion(
                         "package",
                         "database",
                         /* suggestionQueryExpression= */ "(t)",
-                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build());
+                        new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10).build(),
+                        /* callStatsBuilder= */ null);
         assertThat(suggestions).isEmpty();
     }
 
@@ -2592,7 +2821,8 @@ public class AppSearchImplTest {
                 /* visibilityConfigs= */ Collections.emptyList(),
                 /* forceOverride= */ false,
                 /* version= */ 0,
-                /* setSchemaStatsBuilder= */ null);
+                /* setSchemaStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
         GenericDocument doc =
                 new GenericDocument.Builder<>("namespace1", "id1", "type")
                         .setPropertyString("body", "term1")
@@ -2602,7 +2832,8 @@ public class AppSearchImplTest {
                 "database",
                 doc,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         AppSearchException e =
                 assertThrows(
@@ -2614,7 +2845,8 @@ public class AppSearchImplTest {
                                         /* suggestionQueryExpression= */ "",
                                         new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10)
                                                 .addFilterNamespaces("namespace1")
-                                                .build()));
+                                                .build(),
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_INVALID_ARGUMENT);
         assertThat(e).hasMessageThat().contains("suggestionQueryExpression cannot be empty.");
     }
@@ -2632,7 +2864,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two package1 documents
@@ -2645,13 +2878,15 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database1",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for only 1 result per page
         SearchSpec searchSpec =
@@ -2660,7 +2895,13 @@ public class AppSearchImplTest {
                         .setResultCountPerPage(1)
                         .build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Document2 will come first because it was inserted last and default return order is
         // most recent.
@@ -2669,7 +2910,11 @@ public class AppSearchImplTest {
 
         long nextPageToken = searchResultPage.getNextPageToken();
         searchResultPage =
-                mAppSearchImpl.getNextPage("package1", nextPageToken, /* statsBuilder= */ null);
+                mAppSearchImpl.getNextPage(
+                        "package1",
+                        nextPageToken,
+                        /* statsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document1);
     }
@@ -2687,7 +2932,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two package1 documents
@@ -2700,13 +2946,15 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database1",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for only 1 result per page
         SearchSpec searchSpec =
@@ -2715,7 +2963,13 @@ public class AppSearchImplTest {
                         .setResultCountPerPage(1)
                         .build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Document2 will come first because it was inserted last and default return order is
         // most recent.
@@ -2730,7 +2984,10 @@ public class AppSearchImplTest {
                         AppSearchException.class,
                         () ->
                                 mAppSearchImpl.getNextPage(
-                                        "package2", nextPageToken, /* statsBuilder= */ null));
+                                        "package2",
+                                        nextPageToken,
+                                        /* statsBuilder= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e)
                 .hasMessageThat()
                 .contains("Package \"package2\" cannot use nextPageToken: " + nextPageToken);
@@ -2738,7 +2995,11 @@ public class AppSearchImplTest {
 
         // Can continue getting next page for package1
         searchResultPage =
-                mAppSearchImpl.getNextPage("package1", nextPageToken, /* statsBuilder= */ null);
+                mAppSearchImpl.getNextPage(
+                        "package1",
+                        nextPageToken,
+                        /* statsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document1);
     }
@@ -2756,7 +3017,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two package1 documents
@@ -2769,13 +3031,15 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database1",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for only 1 result per page
         SearchSpec searchSpec =
@@ -2788,7 +3052,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         searchSpec,
                         new CallerAccess(/* callingPackageName= */ "package1"),
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Document2 will come first because it was inserted last and default return order is
         // most recent.
@@ -2797,7 +3062,11 @@ public class AppSearchImplTest {
 
         long nextPageToken = searchResultPage.getNextPageToken();
         searchResultPage =
-                mAppSearchImpl.getNextPage("package1", nextPageToken, /* statsBuilder= */ null);
+                mAppSearchImpl.getNextPage(
+                        "package1",
+                        nextPageToken,
+                        /* statsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document1);
     }
@@ -2815,7 +3084,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two package1 documents
@@ -2828,13 +3098,15 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database1",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for only 1 result per page
         SearchSpec searchSpec =
@@ -2847,7 +3119,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         searchSpec,
                         new CallerAccess(/* callingPackageName= */ "package1"),
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Document2 will come first because it was inserted last and default return order is
         // most recent.
@@ -2862,7 +3135,10 @@ public class AppSearchImplTest {
                         AppSearchException.class,
                         () ->
                                 mAppSearchImpl.getNextPage(
-                                        "package2", nextPageToken, /* statsBuilder= */ null));
+                                        "package2",
+                                        nextPageToken,
+                                        /* statsBuilder= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e)
                 .hasMessageThat()
                 .contains("Package \"package2\" cannot use nextPageToken: " + nextPageToken);
@@ -2870,7 +3146,11 @@ public class AppSearchImplTest {
 
         // Can continue getting next page for package1
         searchResultPage =
-                mAppSearchImpl.getNextPage("package1", nextPageToken, /* statsBuilder= */ null);
+                mAppSearchImpl.getNextPage(
+                        "package1",
+                        nextPageToken,
+                        /* statsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document1);
     }
@@ -2888,7 +3168,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two package1 documents
@@ -2901,13 +3182,15 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database1",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for only 1 result per page
         SearchSpec searchSpec =
@@ -2916,7 +3199,13 @@ public class AppSearchImplTest {
                         .setResultCountPerPage(1)
                         .build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Document2 will come first because it was inserted last and default return order is
         // most recent.
@@ -2926,7 +3215,8 @@ public class AppSearchImplTest {
         long nextPageToken = searchResultPage.getNextPageToken();
 
         // Invalidate the token
-        mAppSearchImpl.invalidateNextPageToken("package1", nextPageToken);
+        mAppSearchImpl.invalidateNextPageToken(
+                "package1", nextPageToken, /* callStatsBuilder= */ null);
 
         // Can't get next page because we invalidated the token.
         AppSearchException e =
@@ -2934,7 +3224,10 @@ public class AppSearchImplTest {
                         AppSearchException.class,
                         () ->
                                 mAppSearchImpl.getNextPage(
-                                        "package1", nextPageToken, /* statsBuilder= */ null));
+                                        "package1",
+                                        nextPageToken,
+                                        /* statsBuilder= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e)
                 .hasMessageThat()
                 .contains("Package \"package1\" cannot use nextPageToken: " + nextPageToken);
@@ -2954,7 +3247,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert one package1 documents
@@ -2965,7 +3259,8 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for 2 results per page, so all the results can fit in one page.
         SearchSpec searchSpec =
@@ -2975,7 +3270,13 @@ public class AppSearchImplTest {
                                 2) // make sure all the results can be returned in one page.
                         .build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // We only have one document indexed
         assertThat(searchResultPage.getResults()).hasSize(1);
@@ -2985,7 +3286,8 @@ public class AppSearchImplTest {
         assertThat(nextPageToken).isEqualTo(0);
 
         // Invalidate the token, no exception should be thrown
-        mAppSearchImpl.invalidateNextPageToken("package1", nextPageToken);
+        mAppSearchImpl.invalidateNextPageToken(
+                "package1", nextPageToken, /* callStatsBuilder= */ null);
     }
 
     @Test
@@ -3001,7 +3303,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two package1 documents
@@ -3014,13 +3317,15 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database1",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for only 1 result per page
         SearchSpec searchSpec =
@@ -3029,7 +3334,13 @@ public class AppSearchImplTest {
                         .setResultCountPerPage(1)
                         .build();
         SearchResultPage searchResultPage =
-                mAppSearchImpl.query("package1", "database1", "", searchSpec, /* logger= */ null);
+                mAppSearchImpl.query(
+                        "package1",
+                        "database1",
+                        "",
+                        searchSpec,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Document2 will come first because it was inserted last and default return order is
         // most recent.
@@ -3042,7 +3353,9 @@ public class AppSearchImplTest {
         AppSearchException e =
                 assertThrows(
                         AppSearchException.class,
-                        () -> mAppSearchImpl.invalidateNextPageToken("package2", nextPageToken));
+                        () ->
+                                mAppSearchImpl.invalidateNextPageToken(
+                                        "package2", nextPageToken, /* callStatsBuilder= */ null));
         assertThat(e)
                 .hasMessageThat()
                 .contains("Package \"package2\" cannot use nextPageToken: " + nextPageToken);
@@ -3050,7 +3363,11 @@ public class AppSearchImplTest {
 
         // Can continue getting next page for package1
         searchResultPage =
-                mAppSearchImpl.getNextPage("package1", nextPageToken, /* statsBuilder= */ null);
+                mAppSearchImpl.getNextPage(
+                        "package1",
+                        nextPageToken,
+                        /* statsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document1);
     }
@@ -3068,7 +3385,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two package1 documents
@@ -3081,13 +3399,15 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database1",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for only 1 result per page
         SearchSpec searchSpec =
@@ -3100,7 +3420,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         searchSpec,
                         new CallerAccess(/* callingPackageName= */ "package1"),
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Document2 will come first because it was inserted last and default return order is
         // most recent.
@@ -3110,7 +3431,8 @@ public class AppSearchImplTest {
         long nextPageToken = searchResultPage.getNextPageToken();
 
         // Invalidate the token
-        mAppSearchImpl.invalidateNextPageToken("package1", nextPageToken);
+        mAppSearchImpl.invalidateNextPageToken(
+                "package1", nextPageToken, /* callStatsBuilder= */ null);
 
         // Can't get next page because we invalidated the token.
         AppSearchException e =
@@ -3118,7 +3440,10 @@ public class AppSearchImplTest {
                         AppSearchException.class,
                         () ->
                                 mAppSearchImpl.getNextPage(
-                                        "package1", nextPageToken, /* statsBuilder= */ null));
+                                        "package1",
+                                        nextPageToken,
+                                        /* statsBuilder= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e)
                 .hasMessageThat()
                 .contains("Package \"package1\" cannot use nextPageToken: " + nextPageToken);
@@ -3138,7 +3463,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two package1 documents
@@ -3151,13 +3477,15 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database1",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for only 1 result per page
         SearchSpec searchSpec =
@@ -3170,7 +3498,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         searchSpec,
                         new CallerAccess(/* callingPackageName= */ "package1"),
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Document2 will come first because it was inserted last and default return order is
         // most recent.
@@ -3183,7 +3512,9 @@ public class AppSearchImplTest {
         AppSearchException e =
                 assertThrows(
                         AppSearchException.class,
-                        () -> mAppSearchImpl.invalidateNextPageToken("package2", nextPageToken));
+                        () ->
+                                mAppSearchImpl.invalidateNextPageToken(
+                                        "package2", nextPageToken, /* callStatsBuilder= */ null));
         assertThat(e)
                 .hasMessageThat()
                 .contains("Package \"package2\" cannot use nextPageToken: " + nextPageToken);
@@ -3191,7 +3522,11 @@ public class AppSearchImplTest {
 
         // Can continue getting next page for package1
         searchResultPage =
-                mAppSearchImpl.getNextPage("package1", nextPageToken, /* statsBuilder= */ null);
+                mAppSearchImpl.getNextPage(
+                        "package1",
+                        nextPageToken,
+                        /* statsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document1);
     }
@@ -3213,7 +3548,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two package1 documents
@@ -3226,13 +3562,15 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database1",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for only 1 result per page
         SearchSpec searchSpec =
@@ -3245,7 +3583,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         searchSpec,
                         new CallerAccess(/* callingPackageName= */ "package1"),
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Document2 will come first because it was inserted last and default return order is
         // most recent.
@@ -3256,7 +3595,7 @@ public class AppSearchImplTest {
         assertThat(nextPageToken).isNotEqualTo(0);
 
         // Call Optimize.
-        mAppSearchImpl.optimize(/* builder= */ null);
+        mAppSearchImpl.optimize(/* optimizeStatsBuilder= */ null, /* callStatsBuilder= */ null);
 
         // All page tokens are evicted after optimize, so AppSearchException with code
         // RESULT_ABORTED will be thrown.
@@ -3265,7 +3604,10 @@ public class AppSearchImplTest {
                         AppSearchException.class,
                         () ->
                                 mAppSearchImpl.getNextPage(
-                                        "package1", nextPageToken, /* statsBuilder= */ null));
+                                        "package1",
+                                        nextPageToken,
+                                        /* statsBuilder= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_ABORTED);
         assertThat(e)
                 .hasMessageThat()
@@ -3287,7 +3629,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two package1 documents
@@ -3300,13 +3643,15 @@ public class AppSearchImplTest {
                 "database1",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database1",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Query for only 1 result per page
         SearchSpec searchSpec =
@@ -3319,7 +3664,8 @@ public class AppSearchImplTest {
                         /* queryExpression= */ "",
                         searchSpec,
                         new CallerAccess(/* callingPackageName= */ "package1"),
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
 
         // Document2 will come first because it was inserted last and default return order is
         // most recent.
@@ -3330,12 +3676,16 @@ public class AppSearchImplTest {
         assertThat(nextPageToken).isNotEqualTo(0);
 
         // Call Optimize.
-        mAppSearchImpl.optimize(/* builder= */ null);
+        mAppSearchImpl.optimize(/* optimizeStatsBuilder= */ null, /* callStatsBuilder= */ null);
 
         // All page tokens are evicted after optimize. getNextPage should return an empty page if
         // the flag is disabled.
         SearchResultPage searchResultPage2 =
-                mAppSearchImpl.getNextPage("package1", nextPageToken, /* statsBuilder= */ null);
+                mAppSearchImpl.getNextPage(
+                        "package1",
+                        nextPageToken,
+                        /* statsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage2.getResults()).isEmpty();
         assertThat(searchResultPage2.getNextPageToken()).isEqualTo(0);
     }
@@ -3348,7 +3698,13 @@ public class AppSearchImplTest {
                         .setTermMatch(TermMatchType.Code.PREFIX_VALUE)
                         .build();
         mAppSearchImpl.removeByQuery(
-                "package", "EmptyDatabase", "", searchSpec, /* statsBuilder= */ null);
+                "package",
+                "EmptyDatabase",
+                "",
+                searchSpec,
+                /* deletedIds= */ null,
+                /* statsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         searchSpec =
                 new SearchSpec.Builder()
@@ -3356,21 +3712,35 @@ public class AppSearchImplTest {
                         .setTermMatch(TermMatchType.Code.PREFIX_VALUE)
                         .build();
         mAppSearchImpl.removeByQuery(
-                "package", "EmptyDatabase", "", searchSpec, /* statsBuilder= */ null);
+                "package",
+                "EmptyDatabase",
+                "",
+                searchSpec,
+                /* deletedIds= */ null,
+                /* statsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         searchSpec = new SearchSpec.Builder().setTermMatch(TermMatchType.Code.PREFIX_VALUE).build();
         mAppSearchImpl.removeByQuery(
-                "package", "EmptyDatabase", "", searchSpec, /* statsBuilder= */ null);
+                "package",
+                "EmptyDatabase",
+                "",
+                searchSpec,
+                /* deletedIds= */ null,
+                /* statsBuilder= */ null,
+                /* callStatsBuilder= */ null);
     }
 
     @Test
     public void testSetSchema() throws Exception {
         List<SchemaTypeConfigProto> existingSchemas =
-                mAppSearchImpl.getSchemaProtoLocked().getTypesList();
+                mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList();
 
         List<AppSearchSchema> schemas =
                 Collections.singletonList(new AppSearchSchema.Builder("Email").build());
         // Set schema Email to AppSearch database1
+        SetSchemaStats.Builder schemaStatsBuilder =
+                new SetSchemaStats.Builder("package", "database1");
         InternalSetSchemaResponse internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
                         "package",
@@ -3379,8 +3749,11 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        schemaStatsBuilder,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        SetSchemaStats schemaStats = schemaStatsBuilder.build();
+        assertThat(schemaStats.getSkippedIcingInteraction()).isFalse();
 
         // Create expected schemaType proto.
         SchemaProto expectedProto =
@@ -3398,8 +3771,125 @@ public class AppSearchImplTest {
         List<SchemaTypeConfigProto> expectedTypes = new ArrayList<>();
         expectedTypes.addAll(existingSchemas);
         expectedTypes.addAll(expectedProto.getTypesList());
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(expectedTypes);
+    }
+
+    @Test
+    public void testSetSchemaNoChanges_doesntInteractWithIcing() throws Exception {
+        boolean canSkipIcingInteraction =
+                mAppSearchImpl.useDatabaseScopedSchemaOperations()
+                        && mAppSearchImpl.enableEarlySetSchemaExit();
+
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(new AppSearchSchema.Builder("Email").build());
+        // Set schema Email to AppSearch database1
+        SetSchemaStats.Builder schemaStatsBuilder =
+                new SetSchemaStats.Builder("package", "database1");
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database1",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        schemaStatsBuilder,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        SetSchemaStats schemaStats = schemaStatsBuilder.build();
+        assertThat(schemaStats.getSkippedIcingInteraction()).isFalse();
+
+        // Set the same schema again. We should not interact with Icing at all.
+        schemaStatsBuilder = new SetSchemaStats.Builder("package", "database1");
+        internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database1",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        schemaStatsBuilder,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        schemaStats = schemaStatsBuilder.build();
+        assertThat(schemaStats.getSkippedIcingInteraction()).isEqualTo(canSkipIcingInteraction);
+        assertThat(schemaStats.getNewTypeCount()).isEqualTo(0);
+        assertThat(schemaStats.getDeletedTypeCount()).isEqualTo(0);
+        assertThat(schemaStats.getCompatibleTypeChangeCount()).isEqualTo(0);
+        assertThat(schemaStats.getIndexIncompatibleTypeChangeCount()).isEqualTo(0);
+        assertThat(schemaStats.getBackwardsIncompatibleTypeChangeCount()).isEqualTo(0);
+    }
+
+    @Test
+    public void testSetSchemaNoChangesWithAddVisibilityChange_updatesVisibilityConfig()
+            throws Exception {
+        boolean canSkipIcingInteraction =
+                mAppSearchImpl.useDatabaseScopedSchemaOperations()
+                        && mAppSearchImpl.enableEarlySetSchemaExit();
+
+        InternalVisibilityConfig visibilityConfig =
+                new InternalVisibilityConfig.Builder("Email")
+                        .setNotDisplayedBySystem(true)
+                        .addVisibleToPackage(new PackageIdentifier("pkgBar", new byte[32]))
+                        .build();
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(new AppSearchSchema.Builder("Email").build());
+        // Set schema Email to AppSearch database1
+        SetSchemaStats.Builder schemaStatsBuilder =
+                new SetSchemaStats.Builder("package", "database1");
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database1",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        schemaStatsBuilder,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        SetSchemaStats schemaStats = schemaStatsBuilder.build();
+        assertThat(schemaStats.getSkippedIcingInteraction()).isFalse();
+
+        // Set the same schema again. We should not interact with Icing at all.
+        schemaStatsBuilder = new SetSchemaStats.Builder("package", "database1");
+        internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database1",
+                        schemas,
+                        Collections.singletonList(visibilityConfig),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        schemaStatsBuilder,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        schemaStats = schemaStatsBuilder.build();
+        assertThat(schemaStats.getSkippedIcingInteraction()).isEqualTo(canSkipIcingInteraction);
+
+        String prefix = PrefixUtil.createPrefix("package", "database1");
+        // assert the visibility document is saved.
+        InternalVisibilityConfig expectedDocument =
+                new InternalVisibilityConfig.Builder(prefix + "Email")
+                        .setNotDisplayedBySystem(true)
+                        .addVisibleToPackage(new PackageIdentifier("pkgBar", new byte[32]))
+                        .build();
+        assertThat(mAppSearchImpl.mDocumentVisibilityStoreLocked.getVisibility(prefix + "Email"))
+                .isEqualTo(expectedDocument);
+        // Verify the InternalVisibilityConfig is saved to AppSearchImpl.
+        InternalVisibilityConfig actualDocument =
+                VisibilityToDocumentConverter.createInternalVisibilityConfig(
+                        mAppSearchImpl.getDocument(
+                                VISIBILITY_PACKAGE_NAME,
+                                DOCUMENT_VISIBILITY_DATABASE_NAME,
+                                VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
+                                /* id= */ prefix + "Email",
+                                /* typePropertyPaths= */ Collections.emptyMap(),
+                                /* callStatsBuilder= */ null),
+                        /* androidVOverlayDocument= */ null);
+        assertThat(actualDocument).isEqualTo(expectedDocument);
     }
 
     @Test
@@ -3421,6 +3911,8 @@ public class AppSearchImplTest {
                         .build());
         oldSchemas.add(new AppSearchSchema.Builder("Text").build());
         // Set schema Email to AppSearch database1
+        SetSchemaStats.Builder schemaStatsBuilder =
+                new SetSchemaStats.Builder("package", "database1");
         InternalSetSchemaResponse internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
                         "package",
@@ -3429,14 +3921,18 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        schemaStatsBuilder,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        SetSchemaStats schemaStats = schemaStatsBuilder.build();
+        assertThat(schemaStats.getSkippedIcingInteraction()).isFalse();
 
         // Create incompatible schema
         List<AppSearchSchema> newSchemas =
                 Collections.singletonList(new AppSearchSchema.Builder("Email").build());
 
         // set email incompatible and delete text
+        schemaStatsBuilder = new SetSchemaStats.Builder("package", "database1");
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
                         "package",
@@ -3445,10 +3941,13 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        schemaStatsBuilder,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
-        SetSchemaResponse setSchemaResponse = internalSetSchemaResponse.getSetSchemaResponse();
+        schemaStats = schemaStatsBuilder.build();
+        assertThat(schemaStats.getSkippedIcingInteraction()).isFalse();
 
+        SetSchemaResponse setSchemaResponse = internalSetSchemaResponse.getSetSchemaResponse();
         assertThat(setSchemaResponse.getDeletedTypes()).containsExactly("Text");
         assertThat(setSchemaResponse.getIncompatibleTypes()).containsExactly("Email");
     }
@@ -3456,7 +3955,7 @@ public class AppSearchImplTest {
     @Test
     public void testRemoveSchema() throws Exception {
         List<SchemaTypeConfigProto> existingSchemas =
-                mAppSearchImpl.getSchemaProtoLocked().getTypesList();
+                mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList();
 
         List<AppSearchSchema> schemas =
                 ImmutableList.of(
@@ -3471,7 +3970,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Create expected schemaType proto.
@@ -3496,7 +3996,7 @@ public class AppSearchImplTest {
         List<SchemaTypeConfigProto> expectedTypes = new ArrayList<>();
         expectedTypes.addAll(existingSchemas);
         expectedTypes.addAll(expectedProto.getTypesList());
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(expectedTypes);
 
         final List<AppSearchSchema> finalSchemas =
@@ -3509,7 +4009,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         // We are fail to set this call since forceOverride is false.
         assertThat(internalSetSchemaResponse.isSuccess()).isFalse();
         SetSchemaResponse setSchemaResponse = internalSetSchemaResponse.getSetSchemaResponse();
@@ -3525,7 +4026,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Check Document schema is removed.
@@ -3544,14 +4046,14 @@ public class AppSearchImplTest {
         expectedTypes = new ArrayList<>();
         expectedTypes.addAll(existingSchemas);
         expectedTypes.addAll(expectedProto.getTypesList());
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(expectedTypes);
     }
 
     @Test
     public void testRemoveSchema_differentDataBase() throws Exception {
         List<SchemaTypeConfigProto> existingSchemas =
-                mAppSearchImpl.getSchemaProtoLocked().getTypesList();
+                mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList();
 
         // Create schemas
         List<AppSearchSchema> schemas =
@@ -3568,7 +4070,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -3578,7 +4081,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Create expected schemaType proto.
@@ -3613,7 +4117,7 @@ public class AppSearchImplTest {
         List<SchemaTypeConfigProto> expectedTypes = new ArrayList<>();
         expectedTypes.addAll(existingSchemas);
         expectedTypes.addAll(expectedProto.getTypesList());
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(expectedTypes);
 
         // Save only Email to database1 this time.
@@ -3626,7 +4130,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Create expected schemaType list, database 1 should only contain Email but database 2
@@ -3657,7 +4162,7 @@ public class AppSearchImplTest {
         expectedTypes = new ArrayList<>();
         expectedTypes.addAll(existingSchemas);
         expectedTypes.addAll(expectedProto.getTypesList());
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(expectedTypes);
     }
 
@@ -3670,6 +4175,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -3679,7 +4185,8 @@ public class AppSearchImplTest {
         AppSearchBlobHandle handle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "ns");
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", handle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
@@ -3687,9 +4194,11 @@ public class AppSearchImplTest {
         }
 
         // commit the change and read the blob.
-        mAppSearchImpl.commitBlob("package", "db1", handle);
+        mAppSearchImpl.commitBlob("package", "db1", handle, /* callStatsBuilder= */ null);
         byte[] readBytes = new byte[20 * 1024];
-        try (ParcelFileDescriptor readPfd = mAppSearchImpl.openReadBlob("package", "db1", handle);
+        try (ParcelFileDescriptor readPfd =
+                        mAppSearchImpl.openReadBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 InputStream inputStream = new ParcelFileDescriptor.AutoCloseInputStream(readPfd)) {
             inputStream.read(readBytes);
         }
@@ -3705,6 +4214,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -3714,14 +4224,16 @@ public class AppSearchImplTest {
         AppSearchBlobHandle handle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "ns");
         // Open a pfd for write, write the blob data without close the pfd.
-        ParcelFileDescriptor writePfd = mAppSearchImpl.openWriteBlob("package", "db1", handle);
+        ParcelFileDescriptor writePfd =
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db1", handle, /* callStatsBuilder= */ null);
         try (FileOutputStream outputStream = new FileOutputStream(writePfd.getFileDescriptor())) {
             outputStream.write(data);
             outputStream.flush();
         }
 
         // Commit the blob.
-        mAppSearchImpl.commitBlob("package", "db1", handle);
+        mAppSearchImpl.commitBlob("package", "db1", handle, /* callStatsBuilder= */ null);
 
         // Keep writing to the pfd for write.
         assertThrows(
@@ -3744,6 +4256,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -3753,23 +4266,26 @@ public class AppSearchImplTest {
         AppSearchBlobHandle handle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "ns");
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", handle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
             outputStream.flush();
         }
 
-        mAppSearchImpl.commitBlob("package", "db1", handle);
+        mAppSearchImpl.commitBlob("package", "db1", handle, /* callStatsBuilder= */ null);
 
         // Remove the committed blob
-        mAppSearchImpl.removeBlob("package", "db1", handle);
+        mAppSearchImpl.removeBlob("package", "db1", handle, /* callStatsBuilder= */ null);
 
         // Read will get NOT_FOUND
         AppSearchException e =
                 assertThrows(
                         AppSearchException.class,
-                        () -> mAppSearchImpl.openReadBlob("package", "db1", handle));
+                        () ->
+                                mAppSearchImpl.openReadBlob(
+                                        "package", "db1", handle, /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_NOT_FOUND);
         assertThat(e.getMessage()).contains("Cannot find the blob for handle");
     }
@@ -3783,6 +4299,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -3792,7 +4309,8 @@ public class AppSearchImplTest {
         AppSearchBlobHandle handle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "ns");
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", handle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
@@ -3800,13 +4318,15 @@ public class AppSearchImplTest {
         }
 
         // Remove the blob
-        mAppSearchImpl.removeBlob("package", "db1", handle);
+        mAppSearchImpl.removeBlob("package", "db1", handle, /* callStatsBuilder= */ null);
 
         // Commit will get NOT_FOUND
         AppSearchException e =
                 assertThrows(
                         AppSearchException.class,
-                        () -> mAppSearchImpl.commitBlob("package", "db1", handle));
+                        () ->
+                                mAppSearchImpl.commitBlob(
+                                        "package", "db1", handle, /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_NOT_FOUND);
         assertThat(e.getMessage()).contains("Cannot find the blob for handle");
     }
@@ -3820,6 +4340,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -3830,7 +4351,8 @@ public class AppSearchImplTest {
         AppSearchBlobHandle handle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "ns");
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", handle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             // write wrong data
@@ -3839,11 +4361,12 @@ public class AppSearchImplTest {
         }
 
         // Remove the blob
-        mAppSearchImpl.removeBlob("package", "db1", handle);
+        mAppSearchImpl.removeBlob("package", "db1", handle, /* callStatsBuilder= */ null);
 
         // reopen and rewrite
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", handle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
@@ -3851,9 +4374,11 @@ public class AppSearchImplTest {
         }
 
         // commit the change and read the blob.
-        mAppSearchImpl.commitBlob("package", "db1", handle);
+        mAppSearchImpl.commitBlob("package", "db1", handle, /* callStatsBuilder= */ null);
         byte[] readBytes = new byte[20 * 1024];
-        try (ParcelFileDescriptor readPfd = mAppSearchImpl.openReadBlob("package", "db1", handle);
+        try (ParcelFileDescriptor readPfd =
+                        mAppSearchImpl.openReadBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 InputStream inputStream = new ParcelFileDescriptor.AutoCloseInputStream(readPfd)) {
             inputStream.read(readBytes);
         }
@@ -3869,6 +4394,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -3878,7 +4404,8 @@ public class AppSearchImplTest {
         AppSearchBlobHandle handle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "ns");
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", handle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
@@ -3886,14 +4413,18 @@ public class AppSearchImplTest {
         }
 
         // commit the change and read the blob.
-        mAppSearchImpl.commitBlob("package", "db1", handle);
+        mAppSearchImpl.commitBlob("package", "db1", handle, /* callStatsBuilder= */ null);
 
         // Open output stream on read-only pfd.
         assertThrows(
                 IOException.class,
                 () -> {
                     try (ParcelFileDescriptor readPfd =
-                                    mAppSearchImpl.openReadBlob("package", "db1", handle);
+                                    mAppSearchImpl.openReadBlob(
+                                            "package",
+                                            "db1",
+                                            handle,
+                                            /* callStatsBuilder= */ null);
                             OutputStream outputStream =
                                     new ParcelFileDescriptor.AutoCloseOutputStream(readPfd)) {
                         outputStream.write(data);
@@ -3910,6 +4441,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -3920,7 +4452,8 @@ public class AppSearchImplTest {
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "ns");
         // openWriteBlob returns read and write fd.
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", handle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 InputStream inputStream = new ParcelFileDescriptor.AutoCloseInputStream(writePfd)) {
             inputStream.read(new byte[10]);
         }
@@ -3935,6 +4468,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -3946,9 +4480,11 @@ public class AppSearchImplTest {
 
         // only allow open 1 fd for writing.
         try (ParcelFileDescriptor writePfd1 =
-                        mAppSearchImpl.openWriteBlob("package", "db1", handle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 ParcelFileDescriptor writePfd2 =
-                        mAppSearchImpl.openWriteBlob("package", "db1", handle)) {
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null)) {
             assertThat(writePfd1).isEqualTo(writePfd2);
         }
     }
@@ -3962,6 +4498,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -3973,19 +4510,23 @@ public class AppSearchImplTest {
 
         // write a blob first.
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", handle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
             outputStream.flush();
         }
         // commit the change and read the blob.
-        mAppSearchImpl.commitBlob("package", "db1", handle);
+        mAppSearchImpl.commitBlob("package", "db1", handle, /* callStatsBuilder= */ null);
 
         // allow open multiple fd for reading.
-        try (ParcelFileDescriptor readPfd1 = mAppSearchImpl.openReadBlob("package", "db1", handle);
+        try (ParcelFileDescriptor readPfd1 =
+                        mAppSearchImpl.openReadBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 ParcelFileDescriptor readPfd2 =
-                        mAppSearchImpl.openReadBlob("package", "db1", handle)) {
+                        mAppSearchImpl.openReadBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null)) {
             assertThat(readPfd1).isNotEqualTo(readPfd2);
         }
     }
@@ -4009,6 +4550,7 @@ public class AppSearchImplTest {
                                     }
                                 }),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -4019,23 +4561,31 @@ public class AppSearchImplTest {
         byte[] digest = calculateDigest(data);
         AppSearchBlobHandle handle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "namespace");
-        ParcelFileDescriptor writePfd = mAppSearchImpl.openWriteBlob("package", "db1", handle);
+        ParcelFileDescriptor writePfd =
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db1", handle, /* callStatsBuilder= */ null);
         try (OutputStream outputStream = new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
             outputStream.flush();
         }
         writePfd.close();
-        mAppSearchImpl.commitBlob("package", "db1", handle);
+        mAppSearchImpl.commitBlob("package", "db1", handle, /* callStatsBuilder= */ null);
 
-        mAppSearchImpl.persistToDisk(PersistType.Code.FULL);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_COMMIT_BLOB,
+                PersistType.Code.FULL,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Optimize remove the expired orphan blob.
-        mAppSearchImpl.optimize(/* builder= */ null);
+        mAppSearchImpl.optimize(/* optimizeStatsBuilder= */ null, /* callStatsBuilder= */ null);
         AppSearchException e =
                 assertThrows(
                         AppSearchException.class,
                         () -> {
-                            mAppSearchImpl.openReadBlob("package", "db1", handle);
+                            mAppSearchImpl.openReadBlob(
+                                    "package", "db1", handle, /* callStatsBuilder= */ null);
                         });
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_NOT_FOUND);
         assertThat(e.getMessage()).contains("Cannot find the blob for handle");
@@ -4060,6 +4610,7 @@ public class AppSearchImplTest {
                                     }
                                 }),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -4070,13 +4621,15 @@ public class AppSearchImplTest {
         byte[] digest = calculateDigest(data);
         AppSearchBlobHandle handle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "namespace");
-        ParcelFileDescriptor writePfd = mAppSearchImpl.openWriteBlob("package", "db1", handle);
+        ParcelFileDescriptor writePfd =
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db1", handle, /* callStatsBuilder= */ null);
         try (OutputStream outputStream = new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
             outputStream.flush();
         }
         writePfd.close();
-        mAppSearchImpl.commitBlob("package", "db1", handle);
+        mAppSearchImpl.commitBlob("package", "db1", handle, /* callStatsBuilder= */ null);
 
         // Put a document link that blob handle.
         AppSearchSchema schema =
@@ -4095,7 +4648,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         GenericDocument document =
                 new GenericDocument.Builder<>("namespace", "id", "Type")
@@ -4106,28 +4660,43 @@ public class AppSearchImplTest {
                 "db1",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
-        mAppSearchImpl.persistToDisk(PersistType.Code.FULL);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.FULL,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Optimize won't remove the blob since it has reference document.
-        mAppSearchImpl.optimize(/* builder= */ null);
+        mAppSearchImpl.optimize(/* optimizeStatsBuilder= */ null, /* callStatsBuilder= */ null);
         byte[] readBytes = new byte[20];
-        try (ParcelFileDescriptor readPfd = mAppSearchImpl.openReadBlob("package", "db1", handle);
+        try (ParcelFileDescriptor readPfd =
+                        mAppSearchImpl.openReadBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
                 InputStream inputStream = new ParcelFileDescriptor.AutoCloseInputStream(readPfd)) {
             inputStream.read(readBytes);
         }
         assertThat(readBytes).isEqualTo(data);
 
-        mAppSearchImpl.remove("package", "db1", "namespace", "id", /* statsBuilder= */ null);
+        mAppSearchImpl.remove(
+                "package",
+                "db1",
+                "namespace",
+                "id",
+                /* statsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // The blob is orphan now and optimize will remove it.
-        mAppSearchImpl.optimize(/* builder= */ null);
+        mAppSearchImpl.optimize(/* optimizeStatsBuilder= */ null, /* callStatsBuilder= */ null);
         AppSearchException e =
                 assertThrows(
                         AppSearchException.class,
                         () -> {
-                            mAppSearchImpl.openReadBlob("package", "db1", handle);
+                            mAppSearchImpl.openReadBlob(
+                                    "package", "db1", handle, /* callStatsBuilder= */ null);
                         });
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_NOT_FOUND);
         assertThat(e.getMessage()).contains("Cannot find the blob for handle");
@@ -4136,12 +4705,15 @@ public class AppSearchImplTest {
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_ENABLE_BLOB_STORE)
     public void testRevokeFileDescriptor() throws Exception {
+        mAppSearchImpl.close();
+        // Initialize AppSearch with revocable file descriptor store.
         mAppSearchImpl =
                 AppSearchImpl.create(
                         mAppSearchDir,
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -4151,7 +4723,8 @@ public class AppSearchImplTest {
         AppSearchBlobHandle handle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "ns");
         try (ParcelFileDescriptor writePfd =
-                mAppSearchImpl.openWriteBlob("package", "db1", handle)) {
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db1", handle, /* callStatsBuilder= */ null)) {
             // Clear package data and all file descriptor to that package will be revoked.
             mAppSearchImpl.clearPackageData("package");
 
@@ -4167,9 +4740,10 @@ public class AppSearchImplTest {
 
         // reopen file descriptor could work.
         try (ParcelFileDescriptor writePfd2 =
-                mAppSearchImpl.openWriteBlob("package", "db1", handle)) {
-            try (OutputStream outputStream =
-                    new ParcelFileDescriptor.AutoCloseOutputStream(writePfd2)) {
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db1", handle, /* callStatsBuilder= */ null)) {
+            try (FileOutputStream outputStream =
+                    new FileOutputStream(writePfd2.getFileDescriptor())) {
                 outputStream.write(data);
             }
             // close the AppSearchImpl will revoke all sent fds.
@@ -4177,8 +4751,8 @@ public class AppSearchImplTest {
             assertThrows(
                     IOException.class,
                     () -> {
-                        try (OutputStream outputStream =
-                                new ParcelFileDescriptor.AutoCloseOutputStream(writePfd2)) {
+                        try (FileOutputStream outputStream =
+                                new FileOutputStream(writePfd2.getFileDescriptor())) {
                             outputStream.write(data);
                         }
                     });
@@ -4195,6 +4769,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -4207,7 +4782,12 @@ public class AppSearchImplTest {
         AppSearchException e =
                 assertThrows(
                         AppSearchException.class,
-                        () -> mAppSearchImpl.openWriteBlob("wrongPackageName", "db1", handle));
+                        () ->
+                                mAppSearchImpl.openWriteBlob(
+                                        "wrongPackageName",
+                                        "db1",
+                                        handle,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_INVALID_ARGUMENT);
         assertThat(e.getMessage())
                 .contains(
@@ -4217,7 +4797,12 @@ public class AppSearchImplTest {
         e =
                 assertThrows(
                         AppSearchException.class,
-                        () -> mAppSearchImpl.openWriteBlob("package", "wrongDb", handle));
+                        () ->
+                                mAppSearchImpl.openWriteBlob(
+                                        "package",
+                                        "wrongDb",
+                                        handle,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_INVALID_ARGUMENT);
         assertThat(e.getMessage())
                 .contains(
@@ -4234,6 +4819,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -4253,7 +4839,8 @@ public class AppSearchImplTest {
                         .build();
 
         String prefix = PrefixUtil.createPrefix("package", "db1");
-        mAppSearchImpl.setBlobNamespaceVisibility("package", "db1", ImmutableList.of(config));
+        mAppSearchImpl.setBlobNamespaceVisibility(
+                "package", "db1", ImmutableList.of(config), /* callStatsBuilder= */ null);
 
         // Expect the config will be added prefix.
         InternalVisibilityConfig expectedConfig =
@@ -4271,14 +4858,16 @@ public class AppSearchImplTest {
                         BLOB_VISIBILITY_DATABASE_NAME,
                         VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                         /* id= */ prefix + "namespace",
-                        /* typePropertyPaths= */ Collections.emptyMap());
+                        /* typePropertyPaths= */ Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         GenericDocument overLayVisibilityDocument =
                 mAppSearchImpl.getDocument(
                         VISIBILITY_PACKAGE_NAME,
                         BLOB_ANDROID_V_OVERLAY_DATABASE_NAME,
                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                         /* id= */ prefix + "namespace",
-                        /* typePropertyPaths= */ Collections.emptyMap());
+                        /* typePropertyPaths= */ Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
 
         InternalVisibilityConfig outputConfig =
                 VisibilityToDocumentConverter.createInternalVisibilityConfig(
@@ -4296,6 +4885,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -4319,7 +4909,10 @@ public class AppSearchImplTest {
                         UnsupportedOperationException.class,
                         () ->
                                 mAppSearchImpl.setBlobNamespaceVisibility(
-                                        "package", "db1", ImmutableList.of(config)));
+                                        "package",
+                                        "db1",
+                                        ImmutableList.of(config),
+                                        /* callStatsBuilder= */ null));
         assertThat(exception)
                 .hasMessageThat()
                 .contains(
@@ -4336,6 +4929,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -4368,7 +4962,7 @@ public class AppSearchImplTest {
 
         String prefix = PrefixUtil.createPrefix("package", "db1");
         mAppSearchImpl.setBlobNamespaceVisibility(
-                "package", "db1", ImmutableList.of(config1, config2));
+                "package", "db1", ImmutableList.of(config1, config2), /* callStatsBuilder= */ null);
 
         // Expect the config will be added prefix.
         InternalVisibilityConfig expectedConfig1 =
@@ -4394,14 +4988,16 @@ public class AppSearchImplTest {
                         BLOB_VISIBILITY_DATABASE_NAME,
                         VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                         /* id= */ prefix + "namespace1",
-                        /* typePropertyPaths= */ Collections.emptyMap());
+                        /* typePropertyPaths= */ Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         GenericDocument overLayVisibilityDocument1 =
                 mAppSearchImpl.getDocument(
                         VISIBILITY_PACKAGE_NAME,
                         BLOB_ANDROID_V_OVERLAY_DATABASE_NAME,
                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                         /* id= */ prefix + "namespace1",
-                        /* typePropertyPaths= */ Collections.emptyMap());
+                        /* typePropertyPaths= */ Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         InternalVisibilityConfig outputConfig1 =
                 VisibilityToDocumentConverter.createInternalVisibilityConfig(
                         visibilityDocument1, overLayVisibilityDocument1);
@@ -4413,14 +5009,16 @@ public class AppSearchImplTest {
                         BLOB_VISIBILITY_DATABASE_NAME,
                         VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                         /* id= */ prefix + "namespace2",
-                        /* typePropertyPaths= */ Collections.emptyMap());
+                        /* typePropertyPaths= */ Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         GenericDocument overLayVisibilityDocument2 =
                 mAppSearchImpl.getDocument(
                         VISIBILITY_PACKAGE_NAME,
                         BLOB_ANDROID_V_OVERLAY_DATABASE_NAME,
                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                         /* id= */ prefix + "namespace2",
-                        /* typePropertyPaths= */ Collections.emptyMap());
+                        /* typePropertyPaths= */ Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         InternalVisibilityConfig outputConfig2 =
                 VisibilityToDocumentConverter.createInternalVisibilityConfig(
                         visibilityDocument2, overLayVisibilityDocument2);
@@ -4428,7 +5026,10 @@ public class AppSearchImplTest {
 
         // remove config1 by only set config2 to db
         mAppSearchImpl.setBlobNamespaceVisibility(
-                "package", "db1", /* visibilityConfigs= */ ImmutableList.of(config2));
+                "package",
+                "db1",
+                /* visibilityConfigs= */ ImmutableList.of(config2),
+                /* callStatsBuilder= */ null);
 
         // Check config 1 is removed from VisibilityStore
         assertThat(mAppSearchImpl.mBlobVisibilityStoreLocked.getVisibility(prefix + "namespace1"))
@@ -4442,7 +5043,8 @@ public class AppSearchImplTest {
                                         BLOB_VISIBILITY_DATABASE_NAME,
                                         VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                         /* id= */ prefix + "namespace1",
-                                        /* typePropertyPaths= */ Collections.emptyMap()));
+                                        /* typePropertyPaths= */ Collections.emptyMap(),
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_NOT_FOUND);
         assertThat(e.getMessage())
                 .isEqualTo("Document (VS#Pkg$VSBlob#Db/, package$db1/namespace1) not found.");
@@ -4455,7 +5057,8 @@ public class AppSearchImplTest {
                                         BLOB_ANDROID_V_OVERLAY_DATABASE_NAME,
                                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                                         /* id= */ prefix + "namespace1",
-                                        /* typePropertyPaths= */ Collections.emptyMap()));
+                                        /* typePropertyPaths= */ Collections.emptyMap(),
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_NOT_FOUND);
         assertThat(e.getMessage())
                 .isEqualTo(
@@ -4471,14 +5074,16 @@ public class AppSearchImplTest {
                         BLOB_VISIBILITY_DATABASE_NAME,
                         VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                         /* id= */ prefix + "namespace2",
-                        /* typePropertyPaths= */ Collections.emptyMap());
+                        /* typePropertyPaths= */ Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         overLayVisibilityDocument2 =
                 mAppSearchImpl.getDocument(
                         VISIBILITY_PACKAGE_NAME,
                         BLOB_ANDROID_V_OVERLAY_DATABASE_NAME,
                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                         /* id= */ prefix + "namespace2",
-                        /* typePropertyPaths= */ Collections.emptyMap());
+                        /* typePropertyPaths= */ Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         outputConfig2 =
                 VisibilityToDocumentConverter.createInternalVisibilityConfig(
                         visibilityDocument2, overLayVisibilityDocument2);
@@ -4498,6 +5103,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -4511,7 +5117,9 @@ public class AppSearchImplTest {
         UnsupportedOperationException exception =
                 assertThrows(
                         UnsupportedOperationException.class,
-                        () -> mAppSearchImpl.globalOpenReadBlob(handle, mSelfCallerAccess));
+                        () ->
+                                mAppSearchImpl.globalOpenReadBlob(
+                                        handle, mSelfCallerAccess, /* callStatsBuilder= */ null));
         assertThat(exception)
                 .hasMessageThat()
                 .contains(
@@ -4531,6 +5139,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -4539,37 +5148,41 @@ public class AppSearchImplTest {
         // Set mock visibility setting.
         InternalVisibilityConfig config =
                 new InternalVisibilityConfig.Builder("visibleNamespace").build();
-        mAppSearchImpl.setBlobNamespaceVisibility("package", "db1", ImmutableList.of(config));
+        mAppSearchImpl.setBlobNamespaceVisibility(
+                "package", "db1", ImmutableList.of(config), /* callStatsBuilder= */ null);
 
         byte[] data = generateRandomBytes(20 * 1024); // 20 KiB
         byte[] digest = calculateDigest(data);
         AppSearchBlobHandle visibleHandle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "visibleNamespace");
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", visibleHandle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", visibleHandle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
             outputStream.flush();
         }
-        mAppSearchImpl.commitBlob("package", "db1", visibleHandle);
+        mAppSearchImpl.commitBlob("package", "db1", visibleHandle, /* callStatsBuilder= */ null);
 
         AppSearchBlobHandle nonVisibleHandle =
                 AppSearchBlobHandle.createWithSha256(
                         digest, "package", "db1", "nonVisibleNamespace");
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", nonVisibleHandle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", nonVisibleHandle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
             outputStream.flush();
         }
-        mAppSearchImpl.commitBlob("package", "db1", nonVisibleHandle);
+        mAppSearchImpl.commitBlob("package", "db1", nonVisibleHandle, /* callStatsBuilder= */ null);
 
         // visibleHandle is visible to the caller.
         byte[] readBytes = new byte[20 * 1024];
         try (ParcelFileDescriptor readPfd =
-                        mAppSearchImpl.globalOpenReadBlob(visibleHandle, mSelfCallerAccess);
+                        mAppSearchImpl.globalOpenReadBlob(
+                                visibleHandle, mSelfCallerAccess, /* callStatsBuilder= */ null);
                 InputStream inputStream = new ParcelFileDescriptor.AutoCloseInputStream(readPfd)) {
             inputStream.read(readBytes);
         }
@@ -4581,7 +5194,9 @@ public class AppSearchImplTest {
                         AppSearchException.class,
                         () ->
                                 mAppSearchImpl.globalOpenReadBlob(
-                                        nonVisibleHandle, mSelfCallerAccess));
+                                        nonVisibleHandle,
+                                        mSelfCallerAccess,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_NOT_FOUND);
         assertThat(e.getMessage()).contains("Cannot find the blob for handle");
     }
@@ -4598,6 +5213,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -4606,37 +5222,41 @@ public class AppSearchImplTest {
         // Set mock visibility setting.
         InternalVisibilityConfig config =
                 new InternalVisibilityConfig.Builder("visibleNamespace").build();
-        mAppSearchImpl.setBlobNamespaceVisibility("package", "db1", ImmutableList.of(config));
+        mAppSearchImpl.setBlobNamespaceVisibility(
+                "package", "db1", ImmutableList.of(config), /* callStatsBuilder= */ null);
 
         byte[] data = generateRandomBytes(20 * 1024); // 20 KiB
         byte[] digest = calculateDigest(data);
         AppSearchBlobHandle visibleHandle =
                 AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "visibleNamespace");
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", visibleHandle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", visibleHandle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
             outputStream.flush();
         }
-        mAppSearchImpl.commitBlob("package", "db1", visibleHandle);
+        mAppSearchImpl.commitBlob("package", "db1", visibleHandle, /* callStatsBuilder= */ null);
 
         AppSearchBlobHandle nonVisibleHandle =
                 AppSearchBlobHandle.createWithSha256(
                         digest, "package", "db1", "nonVisibleNamespace");
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob("package", "db1", nonVisibleHandle);
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", nonVisibleHandle, /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
             outputStream.flush();
         }
-        mAppSearchImpl.commitBlob("package", "db1", nonVisibleHandle);
+        mAppSearchImpl.commitBlob("package", "db1", nonVisibleHandle, /* callStatsBuilder= */ null);
 
         // visibleHandle is visible to the caller.
         byte[] readBytes = new byte[20 * 1024];
         try (ParcelFileDescriptor readPfd =
-                        mAppSearchImpl.globalOpenReadBlob(visibleHandle, mSelfCallerAccess);
+                        mAppSearchImpl.globalOpenReadBlob(
+                                visibleHandle, mSelfCallerAccess, /* callStatsBuilder= */ null);
                 InputStream inputStream = new ParcelFileDescriptor.AutoCloseInputStream(readPfd)) {
             inputStream.read(readBytes);
         }
@@ -4648,18 +5268,24 @@ public class AppSearchImplTest {
                         AppSearchException.class,
                         () ->
                                 mAppSearchImpl.globalOpenReadBlob(
-                                        nonVisibleHandle, mSelfCallerAccess));
+                                        nonVisibleHandle,
+                                        mSelfCallerAccess,
+                                        /* callStatsBuilder= */ null));
         assertThat(exception1.getResultCode()).isEqualTo(AppSearchResult.RESULT_NOT_FOUND);
         assertThat(exception1.getMessage()).contains("Cannot find the blob for handle:");
         assertThat(exception1.getCause()).isNull();
 
         // Remove visibleHandle and verify the error code and message should be same between not
         // found and inaccessible.
-        mAppSearchImpl.removeBlob("package", "db1", visibleHandle);
+        mAppSearchImpl.removeBlob("package", "db1", visibleHandle, /* callStatsBuilder= */ null);
         AppSearchException exception2 =
                 assertThrows(
                         AppSearchException.class,
-                        () -> mAppSearchImpl.globalOpenReadBlob(visibleHandle, mSelfCallerAccess));
+                        () ->
+                                mAppSearchImpl.globalOpenReadBlob(
+                                        visibleHandle,
+                                        mSelfCallerAccess,
+                                        /* callStatsBuilder= */ null));
         assertThat(exception2.getCause()).isNull();
         assertThat(exception2.getResultCode()).isEqualTo(exception1.getResultCode());
         assertThat(exception2.getMessage()).isEqualTo(exception1.getMessage());
@@ -4668,7 +5294,7 @@ public class AppSearchImplTest {
     @Test
     public void testClearPackageData() throws Exception {
         List<SchemaTypeConfigProto> existingSchemas =
-                mAppSearchImpl.getSchemaProtoLocked().getTypesList();
+                mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList();
         Map<String, Set<String>> existingDatabases = mAppSearchImpl.getPackageToDatabases();
 
         // Insert package schema
@@ -4682,7 +5308,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert package document
@@ -4693,7 +5320,8 @@ public class AppSearchImplTest {
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Verify the document is indexed.
         SearchSpec searchSpec =
@@ -4704,7 +5332,8 @@ public class AppSearchImplTest {
                         "database",
                         /* queryExpression= */ "",
                         searchSpec,
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).hasSize(1);
         assertThat(searchResultPage.getResults().get(0).getGenericDocument()).isEqualTo(document);
 
@@ -4718,11 +5347,12 @@ public class AppSearchImplTest {
                         "database2",
                         /* queryExpression= */ "",
                         searchSpec,
-                        /* logger= */ null);
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(searchResultPage.getResults()).isEmpty();
 
         // Verify the schema is cleared.
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(existingSchemas);
         assertThat(mAppSearchImpl.getPackageToDatabases())
                 .containsExactlyEntriesIn(existingDatabases);
@@ -4731,7 +5361,7 @@ public class AppSearchImplTest {
     @Test
     public void testPrunePackageData() throws AppSearchException {
         List<SchemaTypeConfigProto> existingSchemas =
-                mAppSearchImpl.getSchemaProtoLocked().getTypesList();
+                mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList();
         Map<String, Set<String>> existingDatabases = mAppSearchImpl.getPackageToDatabases();
 
         Set<String> existingPackages = new ArraySet<>(existingSchemas.size());
@@ -4757,7 +5387,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ ImmutableList.of(visibilityConfig),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -4767,7 +5398,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ ImmutableList.of(visibilityConfig),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Verify these two packages are stored in AppSearch.
@@ -4791,7 +5423,7 @@ public class AppSearchImplTest {
         List<SchemaTypeConfigProto> expectedTypes = new ArrayList<>();
         expectedTypes.addAll(existingSchemas);
         expectedTypes.addAll(expectedProto.getTypesList());
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(expectedTypes);
 
         // Verify these two visibility documents are stored in AppSearch.
@@ -4818,7 +5450,7 @@ public class AppSearchImplTest {
         mAppSearchImpl.prunePackageData(existingPackages);
 
         // Verify the schema is same as beginning.
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(existingSchemas);
         assertThat(mAppSearchImpl.getPackageToDatabases())
                 .containsExactlyEntriesIn(existingDatabases);
@@ -4837,7 +5469,7 @@ public class AppSearchImplTest {
     @Test
     public void testPrunePackageData_overDatabaseScopedThreshold() throws AppSearchException {
         List<SchemaTypeConfigProto> existingSchemas =
-                mAppSearchImpl.getSchemaProtoLocked().getTypesList();
+                mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList();
         Map<String, Set<String>> existingDatabases = mAppSearchImpl.getPackageToDatabases();
 
         Set<String> existingPackages = new ArraySet<>(existingSchemas.size());
@@ -4867,7 +5499,8 @@ public class AppSearchImplTest {
                             /* visibilityConfigs= */ ImmutableList.of(visibilityConfig),
                             /* forceOverride= */ false,
                             /* version= */ 0,
-                            /* setSchemaStatsBuilder= */ null);
+                            /* setSchemaStatsBuilder= */ null,
+                            /* callStatsBuilder= */ null);
             assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
             String schemaType = PrefixUtil.createPrefix(packageName, databaseName) + "schema";
@@ -4887,7 +5520,7 @@ public class AppSearchImplTest {
         List<SchemaTypeConfigProto> expectedTypes = new ArrayList<>();
         expectedTypes.addAll(existingSchemas);
         expectedTypes.addAll(expectedProto.getTypesList());
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(expectedTypes);
 
         // Verify some visibility documents
@@ -4914,7 +5547,7 @@ public class AppSearchImplTest {
         mAppSearchImpl.prunePackageData(existingPackages);
 
         // Verify the schema is same as beginning.
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(existingSchemas);
         assertThat(mAppSearchImpl.getPackageToDatabases())
                 .containsExactlyEntriesIn(existingDatabases);
@@ -4946,7 +5579,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         assertThat(mAppSearchImpl.getPackageToDatabases())
                 .containsExactlyEntriesIn(expectedMapping);
@@ -4961,7 +5595,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         assertThat(mAppSearchImpl.getPackageToDatabases())
                 .containsExactlyEntriesIn(expectedMapping);
@@ -4976,7 +5611,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         assertThat(mAppSearchImpl.getPackageToDatabases())
                 .containsExactlyEntriesIn(expectedMapping);
@@ -5000,7 +5636,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -5010,7 +5647,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -5020,7 +5658,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         assertThat(mAppSearchImpl.getAllPrefixedSchemaTypes())
                 .containsExactly(
@@ -5041,6 +5680,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -5060,7 +5700,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -5070,7 +5711,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -5080,7 +5722,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         assertThat(mAppSearchImpl.getAllPrefixedSchemaTypes())
                 .containsExactly(
@@ -5109,7 +5752,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two docs
@@ -5122,13 +5766,15 @@ public class AppSearchImplTest {
                 "database",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Report some usages. id1 has 2 app and 1 system usage, id2 has 1 app and 2 system usage.
         mAppSearchImpl.reportUsage(
@@ -5137,21 +5783,24 @@ public class AppSearchImplTest {
                 "namespace",
                 "id1",
                 /* usageTimestampMillis= */ 10,
-                /* systemUsage= */ false);
+                /* systemUsage= */ false,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.reportUsage(
                 "package",
                 "database",
                 "namespace",
                 "id1",
                 /* usageTimestampMillis= */ 20,
-                /* systemUsage= */ false);
+                /* systemUsage= */ false,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.reportUsage(
                 "package",
                 "database",
                 "namespace",
                 "id1",
                 /* usageTimestampMillis= */ 1000,
-                /* systemUsage= */ true);
+                /* systemUsage= */ true,
+                /* callStatsBuilder= */ null);
 
         mAppSearchImpl.reportUsage(
                 "package",
@@ -5159,21 +5808,24 @@ public class AppSearchImplTest {
                 "namespace",
                 "id2",
                 /* usageTimestampMillis= */ 100,
-                /* systemUsage= */ false);
+                /* systemUsage= */ false,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.reportUsage(
                 "package",
                 "database",
                 "namespace",
                 "id2",
                 /* usageTimestampMillis= */ 200,
-                /* systemUsage= */ true);
+                /* systemUsage= */ true,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.reportUsage(
                 "package",
                 "database",
                 "namespace",
                 "id2",
                 /* usageTimestampMillis= */ 150,
-                /* systemUsage= */ true);
+                /* systemUsage= */ true,
+                /* callStatsBuilder= */ null);
 
         // Sort by app usage count: id1 should win
         List<SearchResult> page =
@@ -5186,7 +5838,8 @@ public class AppSearchImplTest {
                                         .setTermMatch(SearchSpec.TERM_MATCH_EXACT_ONLY)
                                         .setRankingStrategy(SearchSpec.RANKING_STRATEGY_USAGE_COUNT)
                                         .build(),
-                                /* logger= */ null)
+                                /* logger= */ null,
+                                /* callStatsBuilder= */ null)
                         .getResults();
         assertThat(page).hasSize(2);
         assertThat(page.get(0).getGenericDocument().getId()).isEqualTo("id1");
@@ -5205,7 +5858,8 @@ public class AppSearchImplTest {
                                                 SearchSpec
                                                         .RANKING_STRATEGY_USAGE_LAST_USED_TIMESTAMP)
                                         .build(),
-                                /* logger= */ null)
+                                /* logger= */ null,
+                                /* callStatsBuilder= */ null)
                         .getResults();
         assertThat(page).hasSize(2);
         assertThat(page.get(0).getGenericDocument().getId()).isEqualTo("id2");
@@ -5223,7 +5877,8 @@ public class AppSearchImplTest {
                                         .setRankingStrategy(
                                                 SearchSpec.RANKING_STRATEGY_SYSTEM_USAGE_COUNT)
                                         .build(),
-                                /* logger= */ null)
+                                /* logger= */ null,
+                                /* callStatsBuilder= */ null)
                         .getResults();
         assertThat(page).hasSize(2);
         assertThat(page.get(0).getGenericDocument().getId()).isEqualTo("id2");
@@ -5242,7 +5897,8 @@ public class AppSearchImplTest {
                                                 SearchSpec
                                                         .RANKING_STRATEGY_SYSTEM_USAGE_LAST_USED_TIMESTAMP)
                                         .build(),
-                                /* logger= */ null)
+                                /* logger= */ null,
+                                /* callStatsBuilder= */ null)
                         .getResults();
         assertThat(page).hasSize(2);
         assertThat(page.get(0).getGenericDocument().getId()).isEqualTo("id1");
@@ -5254,7 +5910,8 @@ public class AppSearchImplTest {
         // "package2" doesn't exist yet, so it shouldn't have any storage size
         StorageInfo storageInfo =
                 mAppSearchImpl.getStorageInfoForPackages(
-                        new ArraySet<>(Collections.singleton("nonexistent.package")));
+                        new ArraySet<>(Collections.singleton("nonexistent.package")),
+                        /* callStatsBuilder= */ null);
         assertThat(storageInfo.getSizeBytes()).isEqualTo(0);
         assertThat(storageInfo.getAliveDocumentsCount()).isEqualTo(0);
         assertThat(storageInfo.getAliveNamespacesCount()).isEqualTo(0);
@@ -5273,13 +5930,15 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Since "package1" doesn't have a document, it get any space attributed to it.
         StorageInfo storageInfo =
                 mAppSearchImpl.getStorageInfoForPackages(
-                        new ArraySet<>(Collections.singleton("package1")));
+                        new ArraySet<>(Collections.singleton("package1")),
+                        /* callStatsBuilder= */ null);
         assertThat(storageInfo.getSizeBytes()).isEqualTo(0);
         assertThat(storageInfo.getAliveDocumentsCount()).isEqualTo(0);
         assertThat(storageInfo.getAliveNamespacesCount()).isEqualTo(0);
@@ -5299,7 +5958,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert document for "package1"
@@ -5310,7 +5970,8 @@ public class AppSearchImplTest {
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Insert schema for "package2"
         internalSetSchemaResponse =
@@ -5321,7 +5982,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert two documents for "package2"
@@ -5331,18 +5993,21 @@ public class AppSearchImplTest {
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         document = new GenericDocument.Builder<>("namespace", "id2", "type").build();
         mAppSearchImpl.putDocument(
                 "package2",
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         StorageInfo storageInfo =
                 mAppSearchImpl.getStorageInfoForPackages(
-                        new ArraySet<>(Collections.singleton("package1")));
+                        new ArraySet<>(Collections.singleton("package1")),
+                        /* callStatsBuilder= */ null);
         long size1 = storageInfo.getSizeBytes();
         assertThat(size1).isGreaterThan(0);
         assertThat(storageInfo.getAliveDocumentsCount()).isEqualTo(1);
@@ -5350,7 +6015,8 @@ public class AppSearchImplTest {
 
         storageInfo =
                 mAppSearchImpl.getStorageInfoForPackages(
-                        new ArraySet<>(Collections.singleton("package2")));
+                        new ArraySet<>(Collections.singleton("package2")),
+                        /* callStatsBuilder= */ null);
         long size2 = storageInfo.getSizeBytes();
         assertThat(size2).isGreaterThan(0);
         assertThat(storageInfo.getAliveDocumentsCount()).isEqualTo(2);
@@ -5366,7 +6032,7 @@ public class AppSearchImplTest {
         // "package2" doesn't exist yet, so it shouldn't have any storage size
         StorageInfo storageInfo =
                 mAppSearchImpl.getStorageInfoForDatabase(
-                        "nonexistent.package", "nonexistentDatabase");
+                        "nonexistent.package", "nonexistentDatabase", /* callStatsBuilder= */ null);
         assertThat(storageInfo.getSizeBytes()).isEqualTo(0);
         assertThat(storageInfo.getAliveDocumentsCount()).isEqualTo(0);
         assertThat(storageInfo.getAliveNamespacesCount()).isEqualTo(0);
@@ -5385,12 +6051,14 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // "package2" doesn't exist yet, so it shouldn't have any storage size
         StorageInfo storageInfo =
-                mAppSearchImpl.getStorageInfoForDatabase("package1", "nonexistentDatabase");
+                mAppSearchImpl.getStorageInfoForDatabase(
+                        "package1", "nonexistentDatabase", /* callStatsBuilder= */ null);
         assertThat(storageInfo.getSizeBytes()).isEqualTo(0);
         assertThat(storageInfo.getAliveDocumentsCount()).isEqualTo(0);
         assertThat(storageInfo.getAliveNamespacesCount()).isEqualTo(0);
@@ -5409,11 +6077,14 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Since "package1", "database1" doesn't have a document, it get any space attributed to it.
-        StorageInfo storageInfo = mAppSearchImpl.getStorageInfoForDatabase("package1", "database1");
+        StorageInfo storageInfo =
+                mAppSearchImpl.getStorageInfoForDatabase(
+                        "package1", "database1", /* callStatsBuilder= */ null);
         assertThat(storageInfo.getSizeBytes()).isEqualTo(0);
         assertThat(storageInfo.getAliveDocumentsCount()).isEqualTo(0);
         assertThat(storageInfo.getAliveNamespacesCount()).isEqualTo(0);
@@ -5432,7 +6103,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -5442,7 +6114,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add a document for "package1", "database1"
@@ -5453,7 +6126,8 @@ public class AppSearchImplTest {
                 "database1",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Add two documents for "package1", "database2"
         document = new GenericDocument.Builder<>("namespace1", "id1", "type").build();
@@ -5462,22 +6136,28 @@ public class AppSearchImplTest {
                 "database2",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         document = new GenericDocument.Builder<>("namespace1", "id2", "type").build();
         mAppSearchImpl.putDocument(
                 "package1",
                 "database2",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
-        StorageInfo storageInfo = mAppSearchImpl.getStorageInfoForDatabase("package1", "database1");
+        StorageInfo storageInfo =
+                mAppSearchImpl.getStorageInfoForDatabase(
+                        "package1", "database1", /* callStatsBuilder= */ null);
         long size1 = storageInfo.getSizeBytes();
         assertThat(size1).isGreaterThan(0);
         assertThat(storageInfo.getAliveDocumentsCount()).isEqualTo(1);
         assertThat(storageInfo.getAliveNamespacesCount()).isEqualTo(1);
 
-        storageInfo = mAppSearchImpl.getStorageInfoForDatabase("package1", "database2");
+        storageInfo =
+                mAppSearchImpl.getStorageInfoForDatabase(
+                        "package1", "database2", /* callStatsBuilder= */ null);
         long size2 = storageInfo.getSizeBytes();
         assertThat(size2).isGreaterThan(0);
         assertThat(storageInfo.getAliveDocumentsCount()).isEqualTo(2);
@@ -5497,6 +6177,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -5506,7 +6187,9 @@ public class AppSearchImplTest {
         byte[] digest1 = calculateDigest(data1);
         AppSearchBlobHandle handle1 =
                 AppSearchBlobHandle.createWithSha256(digest1, "package1", "db1", "ns");
-        ParcelFileDescriptor writePfd1 = mAppSearchImpl.openWriteBlob("package1", "db1", handle1);
+        ParcelFileDescriptor writePfd1 =
+                mAppSearchImpl.openWriteBlob(
+                        "package1", "db1", handle1, /* callStatsBuilder= */ null);
         try (OutputStream outputStream =
                 new ParcelFileDescriptor.AutoCloseOutputStream(writePfd1)) {
             outputStream.write(data1);
@@ -5517,7 +6200,9 @@ public class AppSearchImplTest {
         byte[] digest2 = calculateDigest(data2);
         AppSearchBlobHandle handle2 =
                 AppSearchBlobHandle.createWithSha256(digest2, "package1", "db1", "ns");
-        ParcelFileDescriptor writePfd2 = mAppSearchImpl.openWriteBlob("package1", "db1", handle2);
+        ParcelFileDescriptor writePfd2 =
+                mAppSearchImpl.openWriteBlob(
+                        "package1", "db1", handle2, /* callStatsBuilder= */ null);
         try (OutputStream outputStream =
                 new ParcelFileDescriptor.AutoCloseOutputStream(writePfd2)) {
             outputStream.write(data2);
@@ -5528,7 +6213,9 @@ public class AppSearchImplTest {
         byte[] digest3 = calculateDigest(data3);
         AppSearchBlobHandle handle3 =
                 AppSearchBlobHandle.createWithSha256(digest3, "package2", "db1", "ns");
-        ParcelFileDescriptor writePfd3 = mAppSearchImpl.openWriteBlob("package2", "db1", handle3);
+        ParcelFileDescriptor writePfd3 =
+                mAppSearchImpl.openWriteBlob(
+                        "package2", "db1", handle3, /* callStatsBuilder= */ null);
         try (OutputStream outputStream =
                 new ParcelFileDescriptor.AutoCloseOutputStream(writePfd3)) {
             outputStream.write(data3);
@@ -5537,12 +6224,14 @@ public class AppSearchImplTest {
 
         StorageInfo storageInfo1 =
                 mAppSearchImpl.getStorageInfoForPackages(
-                        new ArraySet<>(Collections.singleton("package1")));
+                        new ArraySet<>(Collections.singleton("package1")),
+                        /* callStatsBuilder= */ null);
         assertThat(storageInfo1.getBlobsSizeBytes()).isEqualTo(15 * 1024);
         assertThat(storageInfo1.getBlobsCount()).isEqualTo(2);
         StorageInfo storageInfo2 =
                 mAppSearchImpl.getStorageInfoForPackages(
-                        new ArraySet<>(Collections.singleton("package2")));
+                        new ArraySet<>(Collections.singleton("package2")),
+                        /* callStatsBuilder= */ null);
         assertThat(storageInfo2.getBlobsSizeBytes()).isEqualTo(20 * 1024);
         assertThat(storageInfo2.getBlobsCount()).isEqualTo(1);
     }
@@ -5556,6 +6245,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -5564,7 +6254,9 @@ public class AppSearchImplTest {
         byte[] digest1 = calculateDigest(data1);
         AppSearchBlobHandle handle1 =
                 AppSearchBlobHandle.createWithSha256(digest1, "package", "db1", "ns");
-        ParcelFileDescriptor writePfd1 = mAppSearchImpl.openWriteBlob("package", "db1", handle1);
+        ParcelFileDescriptor writePfd1 =
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db1", handle1, /* callStatsBuilder= */ null);
         try (OutputStream outputStream =
                 new ParcelFileDescriptor.AutoCloseOutputStream(writePfd1)) {
             outputStream.write(data1);
@@ -5575,7 +6267,9 @@ public class AppSearchImplTest {
         byte[] digest2 = calculateDigest(data2);
         AppSearchBlobHandle handle2 =
                 AppSearchBlobHandle.createWithSha256(digest2, "package", "db1", "ns");
-        ParcelFileDescriptor writePfd2 = mAppSearchImpl.openWriteBlob("package", "db1", handle2);
+        ParcelFileDescriptor writePfd2 =
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db1", handle2, /* callStatsBuilder= */ null);
         try (OutputStream outputStream =
                 new ParcelFileDescriptor.AutoCloseOutputStream(writePfd2)) {
             outputStream.write(data2);
@@ -5586,17 +6280,23 @@ public class AppSearchImplTest {
         byte[] digest3 = calculateDigest(data3);
         AppSearchBlobHandle handle3 =
                 AppSearchBlobHandle.createWithSha256(digest3, "package", "db2", "ns");
-        ParcelFileDescriptor writePfd3 = mAppSearchImpl.openWriteBlob("package", "db2", handle3);
+        ParcelFileDescriptor writePfd3 =
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db2", handle3, /* callStatsBuilder= */ null);
         try (OutputStream outputStream =
                 new ParcelFileDescriptor.AutoCloseOutputStream(writePfd3)) {
             outputStream.write(data3);
             outputStream.flush();
         }
 
-        StorageInfo storageInfo1 = mAppSearchImpl.getStorageInfoForDatabase("package", "db1");
+        StorageInfo storageInfo1 =
+                mAppSearchImpl.getStorageInfoForDatabase(
+                        "package", "db1", /* callStatsBuilder= */ null);
         assertThat(storageInfo1.getBlobsSizeBytes()).isEqualTo(15 * 1024);
         assertThat(storageInfo1.getBlobsCount()).isEqualTo(2);
-        StorageInfo storageInfo2 = mAppSearchImpl.getStorageInfoForDatabase("package", "db2");
+        StorageInfo storageInfo2 =
+                mAppSearchImpl.getStorageInfoForDatabase(
+                        "package", "db2", /* callStatsBuilder= */ null);
         assertThat(storageInfo2.getBlobsSizeBytes()).isEqualTo(20 * 1024);
         assertThat(storageInfo2.getBlobsCount()).isEqualTo(1);
     }
@@ -5614,7 +6314,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         mAppSearchImpl.close();
@@ -5630,7 +6331,8 @@ public class AppSearchImplTest {
                                 /* visibilityConfigs= */ Collections.emptyList(),
                                 /* forceOverride= */ false,
                                 /* version= */ 0,
-                                /* setSchemaStatsBuilder= */ null));
+                                /* setSchemaStatsBuilder= */ null,
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
@@ -5638,7 +6340,8 @@ public class AppSearchImplTest {
                         mAppSearchImpl.getSchema(
                                 /* packageName= */ "package",
                                 /* databaseName= */ "database",
-                                /* callerAccess= */ mSelfCallerAccess));
+                                /* callerAccess= */ mSelfCallerAccess,
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
@@ -5648,13 +6351,19 @@ public class AppSearchImplTest {
                                 "database",
                                 new GenericDocument.Builder<>("namespace", "id", "type").build(),
                                 /* sendChangeNotifications= */ false,
-                                /* logger= */ null));
+                                /* logger= */ null,
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
                 () ->
                         mAppSearchImpl.getDocument(
-                                "package", "database", "namespace", "id", Collections.emptyMap()));
+                                "package",
+                                "database",
+                                "namespace",
+                                "id",
+                                Collections.emptyMap(),
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
@@ -5664,7 +6373,8 @@ public class AppSearchImplTest {
                                 "database",
                                 "query",
                                 new SearchSpec.Builder().build(),
-                                /* logger= */ null));
+                                /* logger= */ null,
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
@@ -5673,17 +6383,23 @@ public class AppSearchImplTest {
                                 "query",
                                 new SearchSpec.Builder().build(),
                                 mSelfCallerAccess,
-                                /* logger= */ null));
+                                /* logger= */ null,
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
                 () ->
                         mAppSearchImpl.getNextPage(
-                                "package", /* nextPageToken= */ 1L, /* statsBuilder= */ null));
+                                "package",
+                                /* nextPageToken= */ 1L,
+                                /* statsBuilder= */ null,
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
-                () -> mAppSearchImpl.invalidateNextPageToken("package", /* nextPageToken= */ 1L));
+                () ->
+                        mAppSearchImpl.invalidateNextPageToken(
+                                "package", /* nextPageToken= */ 1L, /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
@@ -5694,7 +6410,8 @@ public class AppSearchImplTest {
                                 "namespace",
                                 "id",
                                 /* usageTimestampMillis= */ 1000L,
-                                /* systemUsage= */ false));
+                                /* systemUsage= */ false,
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
@@ -5704,7 +6421,8 @@ public class AppSearchImplTest {
                                 "database",
                                 "namespace",
                                 "id",
-                                /* removeStatsBuilder= */ null));
+                                /* removeStatsBuilder= */ null,
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
@@ -5714,21 +6432,32 @@ public class AppSearchImplTest {
                                 "database",
                                 "query",
                                 new SearchSpec.Builder().build(),
-                                /* removeStatsBuilder= */ null));
+                                /* deletedIds= */ null,
+                                /* removeStatsBuilder= */ null,
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
                 () ->
                         mAppSearchImpl.getStorageInfoForPackages(
-                                new ArraySet<>(Collections.singleton("package"))));
+                                new ArraySet<>(Collections.singleton("package")),
+                                /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
-                () -> mAppSearchImpl.getStorageInfoForDatabase("package", "database"));
+                () ->
+                        mAppSearchImpl.getStorageInfoForDatabase(
+                                "package", "database", /* callStatsBuilder= */ null));
 
         assertThrows(
                 IllegalStateException.class,
-                () -> mAppSearchImpl.persistToDisk(PersistType.Code.FULL));
+                () ->
+                        mAppSearchImpl.persistToDisk(
+                                "package",
+                                BaseStats.CALL_TYPE_COMMIT_BLOB,
+                                PersistType.Code.FULL,
+                                /* logger= */ null,
+                                /* callStatsBuilder= */ null));
     }
 
     @Test
@@ -5743,7 +6472,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add a document and persist it.
@@ -5754,12 +6484,23 @@ public class AppSearchImplTest {
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.LITE);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.LITE,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace1", "id1", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id1",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document);
 
         // Initialize a new instance of AppSearch to test initialization.
@@ -5770,6 +6511,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -5785,7 +6527,12 @@ public class AppSearchImplTest {
         // That document should be visible even from another instance.
         getResult =
                 appSearchImpl2.getDocument(
-                        "package", "database", "namespace1", "id1", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id1",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document);
         appSearchImpl2.close();
     }
@@ -5802,7 +6549,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add two documents and persist them.
@@ -5813,7 +6561,8 @@ public class AppSearchImplTest {
                 "database",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace1", "id2", "type").build();
         mAppSearchImpl.putDocument(
@@ -5821,21 +6570,48 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.LITE);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.LITE,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace1", "id1", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id1",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document1);
         getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace1", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
 
         // Delete the first document
-        mAppSearchImpl.remove("package", "database", "namespace1", "id1", /* statsBuilder= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.LITE);
+        mAppSearchImpl.remove(
+                "package",
+                "database",
+                "namespace1",
+                "id1",
+                /* statsBuilder= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_REMOVE_DOCUMENT_BY_ID,
+                PersistType.Code.LITE,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         assertThrows(
                 AppSearchException.class,
                 () ->
@@ -5844,10 +6620,16 @@ public class AppSearchImplTest {
                                 "database",
                                 "namespace1",
                                 "id1",
-                                Collections.emptyMap()));
+                                Collections.emptyMap(),
+                                /* callStatsBuilder= */ null));
         getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace1", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
 
         // Initialize a new instance of AppSearch to test initialization.
@@ -5858,6 +6640,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -5879,10 +6662,16 @@ public class AppSearchImplTest {
                                 "database",
                                 "namespace1",
                                 "id1",
-                                Collections.emptyMap()));
+                                Collections.emptyMap(),
+                                /* callStatsBuilder= */ null));
         getResult =
                 appSearchImpl2.getDocument(
-                        "package", "database", "namespace1", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
         appSearchImpl2.close();
     }
@@ -5899,7 +6688,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add two documents and persist them.
@@ -5910,7 +6700,8 @@ public class AppSearchImplTest {
                 "database",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace2", "id2", "type").build();
         mAppSearchImpl.putDocument(
@@ -5918,16 +6709,32 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.LITE);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.LITE,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace1", "id1", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id1",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document1);
         getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace2", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace2",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
 
         // Delete the first document
@@ -5939,8 +6746,15 @@ public class AppSearchImplTest {
                         .addFilterNamespaces("namespace1")
                         .setTermMatch(SearchSpec.TERM_MATCH_EXACT_ONLY)
                         .build(),
-                /* statsBuilder= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.LITE);
+                /* deletedIds= */ null,
+                /* statsBuilder= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_REMOVE_DOCUMENTS_BY_SEARCH,
+                PersistType.Code.LITE,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         assertThrows(
                 AppSearchException.class,
                 () ->
@@ -5949,10 +6763,16 @@ public class AppSearchImplTest {
                                 "database",
                                 "namespace1",
                                 "id1",
-                                Collections.emptyMap()));
+                                Collections.emptyMap(),
+                                /* callStatsBuilder= */ null));
         getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace2", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace2",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
 
         // Initialize a new instance of AppSearch to test initialization.
@@ -5963,6 +6783,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -5984,10 +6805,16 @@ public class AppSearchImplTest {
                                 "database",
                                 "namespace1",
                                 "id1",
-                                Collections.emptyMap()));
+                                Collections.emptyMap(),
+                                /* callStatsBuilder= */ null));
         getResult =
                 appSearchImpl2.getDocument(
-                        "package", "database", "namespace2", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace2",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
         appSearchImpl2.close();
     }
@@ -6004,7 +6831,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add a document and persist it.
@@ -6015,12 +6843,23 @@ public class AppSearchImplTest {
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.RECOVERY_PROOF);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.RECOVERY_PROOF,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace1", "id1", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id1",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document);
 
         // Initialize a new instance of AppSearch to test initialization.
@@ -6031,6 +6870,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -6046,7 +6886,12 @@ public class AppSearchImplTest {
         // That document should be visible even from another instance.
         getResult =
                 appSearchImpl2.getDocument(
-                        "package", "database", "namespace1", "id1", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id1",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document);
         appSearchImpl2.close();
     }
@@ -6063,7 +6908,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add two documents and persist them.
@@ -6074,7 +6920,8 @@ public class AppSearchImplTest {
                 "database",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace1", "id2", "type").build();
         mAppSearchImpl.putDocument(
@@ -6082,21 +6929,48 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.RECOVERY_PROOF);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.RECOVERY_PROOF,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace1", "id1", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id1",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document1);
         getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace1", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
 
         // Delete the first document
-        mAppSearchImpl.remove("package", "database", "namespace1", "id1", /* statsBuilder= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.RECOVERY_PROOF);
+        mAppSearchImpl.remove(
+                "package",
+                "database",
+                "namespace1",
+                "id1",
+                /* statsBuilder= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_REMOVE_DOCUMENT_BY_ID,
+                PersistType.Code.RECOVERY_PROOF,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         assertThrows(
                 AppSearchException.class,
                 () ->
@@ -6105,10 +6979,16 @@ public class AppSearchImplTest {
                                 "database",
                                 "namespace1",
                                 "id1",
-                                Collections.emptyMap()));
+                                Collections.emptyMap(),
+                                /* callStatsBuilder= */ null));
         getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace1", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
 
         // Initialize a new instance of AppSearch to test initialization.
@@ -6119,6 +6999,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -6140,10 +7021,16 @@ public class AppSearchImplTest {
                                 "database",
                                 "namespace1",
                                 "id1",
-                                Collections.emptyMap()));
+                                Collections.emptyMap(),
+                                /* callStatsBuilder= */ null));
         getResult =
                 appSearchImpl2.getDocument(
-                        "package", "database", "namespace1", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
         appSearchImpl2.close();
     }
@@ -6160,7 +7047,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add two documents and persist them.
@@ -6171,7 +7059,8 @@ public class AppSearchImplTest {
                 "database",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace2", "id2", "type").build();
         mAppSearchImpl.putDocument(
@@ -6179,16 +7068,32 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.RECOVERY_PROOF);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.RECOVERY_PROOF,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace1", "id1", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace1",
+                        "id1",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document1);
         getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace2", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace2",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
 
         // Delete the first document
@@ -6200,8 +7105,15 @@ public class AppSearchImplTest {
                         .addFilterNamespaces("namespace1")
                         .setTermMatch(SearchSpec.TERM_MATCH_EXACT_ONLY)
                         .build(),
-                /* statsBuilder= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.RECOVERY_PROOF);
+                /* deletedIds= */ null,
+                /* statsBuilder= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_REMOVE_DOCUMENTS_BY_SEARCH,
+                PersistType.Code.RECOVERY_PROOF,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         assertThrows(
                 AppSearchException.class,
                 () ->
@@ -6210,10 +7122,16 @@ public class AppSearchImplTest {
                                 "database",
                                 "namespace1",
                                 "id1",
-                                Collections.emptyMap()));
+                                Collections.emptyMap(),
+                                /* callStatsBuilder= */ null));
         getResult =
                 mAppSearchImpl.getDocument(
-                        "package", "database", "namespace2", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace2",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
 
         // Initialize a new instance of AppSearch to test initialization.
@@ -6224,6 +7142,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -6245,10 +7164,16 @@ public class AppSearchImplTest {
                                 "database",
                                 "namespace1",
                                 "id1",
-                                Collections.emptyMap()));
+                                Collections.emptyMap(),
+                                /* callStatsBuilder= */ null));
         getResult =
                 appSearchImpl2.getDocument(
-                        "package", "database", "namespace2", "id2", Collections.emptyMap());
+                        "package",
+                        "database",
+                        "namespace2",
+                        "id2",
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document2);
         appSearchImpl2.close();
     }
@@ -6266,7 +7191,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add two documents
@@ -6277,7 +7203,8 @@ public class AppSearchImplTest {
                 "database",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace1", "id2", "type").build();
         mAppSearchImpl.putDocument(
@@ -6285,9 +7212,11 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
-        StorageInfoProto storageInfo = mAppSearchImpl.getRawStorageInfoProto();
+        StorageInfoProto storageInfo =
+                mAppSearchImpl.getRawStorageInfoProto(/* callStatsBuilder= */ null);
 
         // Simple checks to verify if we can get correct StorageInfoProto from IcingSearchEngine
         // No need to cover all the fields
@@ -6306,6 +7235,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -6320,7 +7250,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add two documents
@@ -6331,7 +7262,8 @@ public class AppSearchImplTest {
                 "database",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace1", "id2", "type").build();
         mAppSearchImpl.putDocument(
@@ -6339,9 +7271,11 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
-        StorageInfoProto storageInfo = mAppSearchImpl.getRawStorageInfoProto();
+        StorageInfoProto storageInfo =
+                mAppSearchImpl.getRawStorageInfoProto(/* callStatsBuilder= */ null);
 
         // Simple checks to verify if we can get correct StorageInfoProto from IcingSearchEngine
         // No need to cover all the fields
@@ -6364,7 +7298,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add two documents
@@ -6375,7 +7310,8 @@ public class AppSearchImplTest {
                 "database",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace1", "id2", "type").build();
         mAppSearchImpl.putDocument(
@@ -6383,7 +7319,8 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         DebugInfoProto debugInfo =
                 mAppSearchImpl.getRawDebugInfoProto(DebugInfoVerbosity.Code.DETAILED);
@@ -6406,6 +7343,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
                         /* icingSearchEngine= */ null,
@@ -6420,7 +7358,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add two documents
@@ -6431,7 +7370,8 @@ public class AppSearchImplTest {
                 "database",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace1", "id2", "type").build();
         mAppSearchImpl.putDocument(
@@ -6439,7 +7379,8 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         DebugInfoProto debugInfo =
                 mAppSearchImpl.getRawDebugInfoProto(DebugInfoVerbosity.Code.DETAILED);
@@ -6467,6 +7408,7 @@ public class AppSearchImplTest {
                         mAppSearchDir,
                         mUnlimitedConfig,
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         icingSearchEngine,
@@ -6489,7 +7431,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        setSchemaStatsBuilder);
+                        setSchemaStatsBuilder,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         SetSchemaStats setSchemaStats = setSchemaStatsBuilder.build();
         assertThat(setSchemaStats.getEnabledFeatures()).isEqualTo(onlyLaunchVMFeature);
@@ -6510,7 +7453,12 @@ public class AppSearchImplTest {
         GenericDocument document =
                 new GenericDocument.Builder<>("namespace1", "id1", "type").build();
         mAppSearchImpl.putDocument(
-                "package", "database", document, /* sendChangeNotifications= */ false, fakeLogger);
+                "package",
+                "database",
+                document,
+                /* sendChangeNotifications= */ false,
+                fakeLogger,
+                /* callStatsBuilder= */ null);
 
         List<GenericDocument> documents = new ArrayList<>();
         documents.add(document);
@@ -6523,10 +7471,16 @@ public class AppSearchImplTest {
                 resultBuilder,
                 /* sendChangeNotifications= */ false,
                 fakeLogger,
-                PersistType.Code.LITE);
+                PersistType.Code.LITE,
+                /* callStatsBuilder= */ null);
 
         mAppSearchImpl.query(
-                "package", "database", "", new SearchSpec.Builder().build(), fakeLogger);
+                "package",
+                "database",
+                "",
+                new SearchSpec.Builder().build(),
+                fakeLogger,
+                /* callStatsBuilder= */ null);
 
         // Delete the document and check remove stats
         RemoveStats.Builder removeStatsBuilder = new RemoveStats.Builder("package", "database");
@@ -6538,13 +7492,15 @@ public class AppSearchImplTest {
                         .addFilterNamespaces("namespace1")
                         .setTermMatch(SearchSpec.TERM_MATCH_EXACT_ONLY)
                         .build(),
-                removeStatsBuilder);
+                /* deletedIds= */ null,
+                removeStatsBuilder,
+                /* callStatsBuilder= */ null);
         RemoveStats removeStats = removeStatsBuilder.build();
         assertThat(removeStats.getEnabledFeatures()).isEqualTo(onlyLaunchVMFeature);
 
         // Trigger optimize and check optimize stats
         OptimizeStats.Builder optimizeStatsBuilder = new OptimizeStats.Builder();
-        mAppSearchImpl.optimize(optimizeStatsBuilder);
+        mAppSearchImpl.optimize(optimizeStatsBuilder, /* callStatsBuilder= */ null);
         OptimizeStats optimizeStats = optimizeStatsBuilder.build();
         assertThat(optimizeStats.getEnabledFeatures()).isEqualTo(onlyLaunchVMFeature);
     }
@@ -6559,6 +7515,7 @@ public class AppSearchImplTest {
                         mAppSearchDir,
                         mUnlimitedConfig,
                         initStatsBuilder,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -6581,7 +7538,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        setSchemaStatsBuilder);
+                        setSchemaStatsBuilder,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         SetSchemaStats setSchemaStats = setSchemaStatsBuilder.build();
         assertThat(setSchemaStats.getEnabledFeatures()).isEqualTo(noLaunchFeature);
@@ -6602,7 +7560,12 @@ public class AppSearchImplTest {
         GenericDocument document =
                 new GenericDocument.Builder<>("namespace1", "id1", "type").build();
         mAppSearchImpl.putDocument(
-                "package", "database", document, /* sendChangeNotifications= */ false, fakeLogger);
+                "package",
+                "database",
+                document,
+                /* sendChangeNotifications= */ false,
+                fakeLogger,
+                /* callStatsBuilder= */ null);
 
         List<GenericDocument> documents = new ArrayList<>();
         documents.add(document);
@@ -6615,10 +7578,16 @@ public class AppSearchImplTest {
                 resultBuilder,
                 /* sendChangeNotifications= */ false,
                 fakeLogger,
-                PersistType.Code.LITE);
+                PersistType.Code.LITE,
+                /* callStatsBuilder= */ null);
 
         mAppSearchImpl.query(
-                "package", "database", "", new SearchSpec.Builder().build(), fakeLogger);
+                "package",
+                "database",
+                "",
+                new SearchSpec.Builder().build(),
+                fakeLogger,
+                /* callStatsBuilder= */ null);
 
         // Delete the document and check remove stats
         RemoveStats.Builder removeStatsBuilder = new RemoveStats.Builder("package", "database");
@@ -6630,15 +7599,494 @@ public class AppSearchImplTest {
                         .addFilterNamespaces("namespace1")
                         .setTermMatch(SearchSpec.TERM_MATCH_EXACT_ONLY)
                         .build(),
-                removeStatsBuilder);
+                /* deletedIds= */ null,
+                removeStatsBuilder,
+                /* callStatsBuilder= */ null);
         RemoveStats removeStats = removeStatsBuilder.build();
         assertThat(removeStats.getEnabledFeatures()).isEqualTo(noLaunchFeature);
 
         // Trigger optimize and check optimize stats
         OptimizeStats.Builder optimizeStatsBuilder = new OptimizeStats.Builder();
-        mAppSearchImpl.optimize(optimizeStatsBuilder);
+        mAppSearchImpl.optimize(optimizeStatsBuilder, /* callStatsBuilder= */ null);
         OptimizeStats optimizeStats = optimizeStatsBuilder.build();
         assertThat(optimizeStats.getEnabledFeatures()).isEqualTo(noLaunchFeature);
+    }
+
+    @Test
+    public void testLastBlockingOperationStats() throws Exception {
+        mAppSearchImpl =
+                AppSearchImpl.create(
+                        mAppSearchDir,
+                        mUnlimitedConfig,
+                        /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
+                        /* visibilityChecker= */ null,
+                        new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
+                        /* icingSearchEngine= */ null,
+                        ALWAYS_OPTIMIZE);
+
+        // Set a schema and check last write operation is Initialize
+        CallStats.Builder callStatsBuilder = new CallStats.Builder();
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(new AppSearchSchema.Builder("type").build());
+        SetSchemaStats.Builder setSchemaStatsBuilder =
+                new SetSchemaStats.Builder("package", "database");
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        setSchemaStatsBuilder,
+                        callStatsBuilder);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        SetSchemaStats setSchemaStats = setSchemaStatsBuilder.build();
+        assertThat(setSchemaStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_INITIALIZE);
+        CallStats callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation()).isEqualTo(BaseStats.CALL_TYPE_INITIALIZE);
+
+        // Put a document and check last write operation is SetSchema
+        AppSearchLogger fakeLogger =
+                new AppSearchLogger() {
+                    @Override
+                    public void logStats(@NonNull SetSchemaStats stats) {
+                        assertThat(stats.getLastBlockingOperation())
+                                .isEqualTo(BaseStats.CALL_TYPE_SET_SCHEMA);
+                    }
+                };
+        GenericDocument document = new GenericDocument.Builder<>("namespace", "id", "type").build();
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.putDocument(
+                "package",
+                "database",
+                document,
+                /* sendChangeNotifications= */ false,
+                fakeLogger,
+                callStatsBuilder);
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation()).isEqualTo(BaseStats.CALL_TYPE_SET_SCHEMA);
+
+        // Batch put a document and check last write operation is PUT_DOCUMENT
+        fakeLogger =
+                new AppSearchLogger() {
+                    @Override
+                    public void logStats(@NonNull PutDocumentStats stats) {
+                        assertThat(stats.getLastBlockingOperation())
+                                .isEqualTo(BaseStats.CALL_TYPE_PUT_DOCUMENT);
+                    }
+                };
+        List<GenericDocument> documents = new ArrayList<>();
+        documents.add(document);
+        AppSearchBatchResult.Builder<String, Void> resultBuilder =
+                new AppSearchBatchResult.Builder<>();
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.batchPutDocuments(
+                "package",
+                "database",
+                documents,
+                resultBuilder,
+                /* sendChangeNotifications= */ false,
+                fakeLogger,
+                PersistType.Code.LITE,
+                callStatsBuilder);
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_PUT_DOCUMENT);
+
+        // Search document and check last write operation is PUT_DOCUMENTS
+        fakeLogger =
+                new AppSearchLogger() {
+                    @Override
+                    public void logStats(@NonNull QueryStats stats) {
+                        assertThat(stats.getLastBlockingOperation())
+                                .isEqualTo(BaseStats.CALL_TYPE_PUT_DOCUMENTS);
+                    }
+                };
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.query(
+                "package",
+                "database",
+                "",
+                new SearchSpec.Builder().build(),
+                fakeLogger,
+                callStatsBuilder);
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_PUT_DOCUMENTS);
+
+        // Global query will only blocked by write operation
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.globalQuery(
+                "",
+                new SearchSpec.Builder().build(),
+                mSelfCallerAccess,
+                fakeLogger,
+                callStatsBuilder);
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_PUT_DOCUMENTS);
+
+        // Report usage write operation will be blocked by read and write operation
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.reportUsage(
+                "package",
+                "database",
+                "namespace",
+                "id",
+                /* usageTimestampMillis= */ 10,
+                /* systemUsage= */ false,
+                callStatsBuilder);
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_GLOBAL_SEARCH);
+
+        // Get document and check the last blocking operation
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.getDocument(
+                "package", "database", "namespace", "id", Collections.emptyMap(), callStatsBuilder);
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_REPORT_USAGE);
+
+        // Batch get document and check the last blocking operation
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.batchGetDocuments(
+                "package",
+                "database",
+                new GetByDocumentIdRequest.Builder("namespace").addIds("id").build(),
+                mSelfCallerAccess,
+                callStatsBuilder);
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_REPORT_USAGE);
+
+        // Remove document and check last write operation is REPORT_USAGE
+        RemoveStats.Builder removeStatsBuilder = new RemoveStats.Builder("package", "database");
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.remove(
+                "package", "database", "namespace", "id", removeStatsBuilder, callStatsBuilder);
+        RemoveStats removeStats = removeStatsBuilder.build();
+        assertThat(removeStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_GET_DOCUMENTS);
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_GET_DOCUMENTS);
+
+        // RemoveByQuery and check last write operation is REMOVE_DOCUMENT_BY_ID
+        removeStatsBuilder = new RemoveStats.Builder("package", "database");
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.removeByQuery(
+                "package",
+                "database",
+                "",
+                new SearchSpec.Builder().build(),
+                /* deletedIds= */ null,
+                removeStatsBuilder,
+                callStatsBuilder);
+        removeStats = removeStatsBuilder.build();
+        assertThat(removeStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_REMOVE_DOCUMENT_BY_ID);
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_REMOVE_DOCUMENT_BY_ID);
+
+        // Optimize to check the last blocking operation is REMOVE_DOCUMENTS_BY_SEARCH
+        OptimizeStats.Builder optimizeStatsBuilder = new OptimizeStats.Builder();
+        mAppSearchImpl.optimize(optimizeStatsBuilder, /* callStatsBuilder= */ null);
+        OptimizeStats optimizeStats = optimizeStatsBuilder.build();
+        assertThat(optimizeStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_REMOVE_DOCUMENTS_BY_SEARCH);
+
+        // Flush and check the last blocking operation
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.FULL,
+                /* logger= */ null,
+                callStatsBuilder);
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation()).isEqualTo(BaseStats.CALL_TYPE_OPTIMIZE);
+        // Second call to check last blocking operation is flush
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.FULL,
+                /* logger= */ null,
+                callStatsBuilder);
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation()).isEqualTo(BaseStats.CALL_TYPE_FLUSH);
+
+        // Clear package data
+        mAppSearchImpl.clearPackageData("nonExistPackage");
+
+        // Write blob and check the last blocking operation
+        callStatsBuilder = new CallStats.Builder();
+        AppSearchBlobHandle handle =
+                AppSearchBlobHandle.createWithSha256(
+                        /* digest= */ new byte[32], "package", "db1", "ns");
+        try {
+            mAppSearchImpl.openWriteBlob("package", "database", handle, callStatsBuilder);
+        } catch (Exception e) {
+            // We don't care whether the write blob is success or not, just want to verify the last
+            // write operation.
+        }
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.INTERNAL_CALL_TYPE_PRUNE_PACKAGE_DATA);
+
+        // Commit blob and check the last blocking operation
+        callStatsBuilder = new CallStats.Builder();
+        try {
+            mAppSearchImpl.commitBlob("package", "database", handle, callStatsBuilder);
+        } catch (Exception e) {
+            // We don't care whether the write blob is success or not, just want to verify the last
+            // write operation.
+        }
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_OPEN_WRITE_BLOB);
+
+        // Remove blob and check the last blocking operation
+        callStatsBuilder = new CallStats.Builder();
+        try {
+            mAppSearchImpl.removeBlob("package", "database", handle, callStatsBuilder);
+        } catch (Exception e) {
+            // We don't care whether the write blob is success or not, just want to verify the last
+            // write operation.
+        }
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation()).isEqualTo(BaseStats.CALL_TYPE_COMMIT_BLOB);
+
+        // Set blob visibility and check the last blocking operation
+        callStatsBuilder = new CallStats.Builder();
+        try {
+            mAppSearchImpl.setBlobNamespaceVisibility(
+                    "package", "database", ImmutableList.of(), callStatsBuilder);
+        } catch (Exception e) {
+            // We don't care whether the write blob is success or not, just want to verify the last
+            // write operation.
+        }
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation()).isEqualTo(BaseStats.CALL_TYPE_REMOVE_BLOB);
+
+        // Read blob visibility and check the last blocking operation
+        callStatsBuilder = new CallStats.Builder();
+        try {
+            mAppSearchImpl.openReadBlob("package", "database", handle, callStatsBuilder);
+        } catch (Exception e) {
+            // We don't care whether the write blob is success or not, just want to verify the last
+            // write operation.
+        }
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_SET_BLOB_VISIBILITY);
+
+        // Global read blob visibility and check the last blocking operation
+        callStatsBuilder = new CallStats.Builder();
+        try {
+            mAppSearchImpl.globalOpenReadBlob(handle, mSelfCallerAccess, callStatsBuilder);
+        } catch (Exception e) {
+            // We don't care whether the write blob is success or not, just want to verify the last
+            // write operation.
+        }
+        callStats = callStatsBuilder.build();
+        assertThat(callStats.getLastBlockingOperation())
+                .isEqualTo(BaseStats.CALL_TYPE_SET_BLOB_VISIBILITY);
+    }
+
+    @Test
+    public void testGetVmLatency() throws Exception {
+        CallStats.Builder callStatsBuilder = new CallStats.Builder();
+
+        mAppSearchImpl =
+                AppSearchImpl.create(
+                        mAppSearchDir,
+                        new AppSearchConfigImpl(
+                                new LimitConfig() {
+                                    @Override
+                                    public int getMaxByteLimitForBatchPut() {
+                                        return 80;
+                                    }
+
+                                    @Override
+                                    public int getMaxDocumentSizeBytes() {
+                                        return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getPerPackageDocumentCountLimit() {
+                                        return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getDocumentCountLimitStartThreshold() {
+                                        return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getMaxSuggestionCount() {
+                                        return Integer.MAX_VALUE;
+                                    }
+
+                                    @Override
+                                    public int getMaxOpenBlobCount() {
+                                        return 2;
+                                    }
+                                },
+                                new LocalStorageIcingOptionsConfig()),
+                        /* initStatsBuilder= */ null,
+                        callStatsBuilder,
+                        /* visibilityChecker= */ null,
+                        new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
+                        /* icingSearchEngine= */ null,
+                        ALWAYS_OPTIMIZE);
+        // initialize + GetSchema + GetStorage + SetVisibilitySchema + SetBlobVisibilitySchema
+        assertThat(callStatsBuilder.build().getNumIcingCalls()).isEqualTo(5);
+
+        // Set a schema
+        callStatsBuilder = new CallStats.Builder();
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(new AppSearchSchema.Builder("type").build());
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        callStatsBuilder);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        assertThat(callStatsBuilder.build().getNumIcingCalls()).isEqualTo(1);
+
+        // Put a document and check last write operation is SetSchema
+        AppSearchLogger fakeLogger = new AppSearchLogger() {};
+        callStatsBuilder = new CallStats.Builder();
+        GenericDocument document1 =
+                new GenericDocument.Builder<>("namespace", "id", "type").build();
+        GenericDocument document2 =
+                new GenericDocument.Builder<>("namespace", "id2", "type").build();
+        GenericDocument document3 =
+                new GenericDocument.Builder<>("namespace", "id3", "type").build();
+        mAppSearchImpl.putDocument(
+                "package",
+                "database",
+                document1,
+                /* sendChangeNotifications= */ false,
+                fakeLogger,
+                callStatsBuilder);
+        assertThat(callStatsBuilder.build().getNumIcingCalls()).isEqualTo(1);
+
+        // Batch put 3 documents, the batch size is set to 80 Byte, and each doc will have ~66 Byte
+        // This will have 3 batches
+        callStatsBuilder = new CallStats.Builder();
+        List<GenericDocument> documents = new ArrayList<>();
+        documents.add(document1);
+        documents.add(document2);
+        documents.add(document3);
+        AppSearchBatchResult.Builder<String, Void> resultBuilder =
+                new AppSearchBatchResult.Builder<>();
+        mAppSearchImpl.batchPutDocuments(
+                "package",
+                "database",
+                documents,
+                resultBuilder,
+                /* sendChangeNotifications= */ false,
+                fakeLogger,
+                PersistType.Code.LITE,
+                callStatsBuilder);
+        assertThat(callStatsBuilder.build().getNumIcingCalls()).isEqualTo(3);
+
+        // Search document
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.query(
+                "package",
+                "database",
+                "",
+                new SearchSpec.Builder().build(),
+                fakeLogger,
+                callStatsBuilder);
+        assertThat(callStatsBuilder.build().getNumIcingCalls()).isEqualTo(1);
+
+        // Report usage
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.reportUsage(
+                "package",
+                "database",
+                "namespace",
+                "id",
+                /* usageTimestampMillis= */ 10,
+                /* systemUsage= */ false,
+                callStatsBuilder);
+        assertThat(callStatsBuilder.build().getNumIcingCalls()).isEqualTo(1);
+
+        // Remove document
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.remove(
+                "package",
+                "database",
+                "namespace",
+                "id",
+                /* removeStatsBuilder= */ null,
+                callStatsBuilder);
+        assertThat(callStatsBuilder.build().getNumIcingCalls()).isEqualTo(1);
+
+        // RemoveByQuery
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.removeByQuery(
+                "package",
+                "database",
+                "",
+                new SearchSpec.Builder().build(),
+                /* deletedIds= */ null,
+                /* removeStatsBuilder= */ null,
+                callStatsBuilder);
+        assertThat(callStatsBuilder.build().getNumIcingCalls()).isEqualTo(1);
+
+        // Optimize
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.optimize(/* optimizeStatsBuilder= */ null, callStatsBuilder);
+        assertThat(callStatsBuilder.build().getNumIcingCalls()).isEqualTo(1);
+
+        // Flush
+        callStatsBuilder = new CallStats.Builder();
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.FULL,
+                /* logger= */ null,
+                callStatsBuilder);
+        assertThat(callStatsBuilder.build().getNumIcingCalls()).isEqualTo(1);
+    }
+
+    @Test
+    public void testPersistToDiskStats() throws Exception {
+        final List<PersistToDiskStats> loggedStats = new ArrayList<>();
+        AppSearchLogger fakeLogger =
+                new AppSearchLogger() {
+                    @Override
+                    public void logStats(@NonNull PersistToDiskStats stats) {
+                        loggedStats.add(stats);
+                        assertThat(stats.getPackageName()).isEqualTo("testPackage");
+                        assertThat(stats.getTriggerCallType())
+                                .isEqualTo(BaseStats.CALL_TYPE_PUT_DOCUMENTS);
+                        assertThat(stats.getPersistType()).isEqualTo(PersistType.Code.FULL);
+                        assertThat(stats.getStatusCode()).isEqualTo(AppSearchResult.RESULT_OK);
+                    }
+                };
+
+        mAppSearchImpl.persistToDisk(
+                "testPackage",
+                BaseStats.CALL_TYPE_PUT_DOCUMENTS,
+                PersistType.Code.FULL,
+                fakeLogger,
+                /* callStatsBuilder= */ null);
+        assertThat(loggedStats).hasSize(1);
     }
 
     @Test
@@ -6682,6 +8130,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -6698,7 +8147,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Insert a document which is too large
@@ -6715,7 +8165,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -6732,7 +8183,8 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now we should get a failure
         GenericDocument document3 =
@@ -6746,7 +8198,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document3,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -6795,6 +8248,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -6811,7 +8265,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index a document
@@ -6820,7 +8275,8 @@ public class AppSearchImplTest {
                 "database",
                 new GenericDocument.Builder<>("namespace", "id1", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now we should get a failure
         GenericDocument document2 =
@@ -6834,7 +8290,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document2,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -6879,6 +8336,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -6894,7 +8352,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document2,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -6942,6 +8401,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -6958,7 +8418,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index 3 documents
@@ -6967,19 +8428,22 @@ public class AppSearchImplTest {
                 "database",
                 new GenericDocument.Builder<>("namespace", "id1", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
                 new GenericDocument.Builder<>("namespace", "id2", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
                 new GenericDocument.Builder<>("namespace", "id3", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now we should get a failure
         GenericDocument document4 =
@@ -6993,7 +8457,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document4,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7008,7 +8473,8 @@ public class AppSearchImplTest {
                                 "database",
                                 "namespace",
                                 "id4",
-                                /* removeStatsBuilder= */ null));
+                                /* removeStatsBuilder= */ null,
+                                /* callStatsBuilder= */ null));
 
         // Should still fail
         e =
@@ -7020,7 +8486,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document4,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7028,7 +8495,12 @@ public class AppSearchImplTest {
 
         // Remove a document that does exist
         mAppSearchImpl.remove(
-                "package", "database", "namespace", "id2", /* removeStatsBuilder= */ null);
+                "package",
+                "database",
+                "namespace",
+                "id2",
+                /* removeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now doc4 should work
         mAppSearchImpl.putDocument(
@@ -7036,7 +8508,8 @@ public class AppSearchImplTest {
                 "database",
                 document4,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // The next one should fail again
         e =
@@ -7049,7 +8522,8 @@ public class AppSearchImplTest {
                                         new GenericDocument.Builder<>("namespace", "id5", "type")
                                                 .build(),
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7098,6 +8572,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -7114,7 +8589,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -7124,7 +8600,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -7134,7 +8611,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -7144,7 +8622,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index documents in package1/database1
@@ -7153,13 +8632,15 @@ public class AppSearchImplTest {
                 "database1",
                 new GenericDocument.Builder<>("namespace", "id1", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package1",
                 "database2",
                 new GenericDocument.Builder<>("namespace", "id2", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Indexing a third doc into package1 should fail (here we use database3)
         AppSearchException e =
@@ -7172,7 +8653,8 @@ public class AppSearchImplTest {
                                         new GenericDocument.Builder<>("namespace", "id3", "type")
                                                 .build(),
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7184,7 +8666,8 @@ public class AppSearchImplTest {
                 "database1",
                 new GenericDocument.Builder<>("namespace", "id1", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Reinitialize to make sure packages are parsed correctly on init
         mAppSearchImpl.close();
@@ -7225,6 +8708,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -7241,7 +8725,8 @@ public class AppSearchImplTest {
                                         new GenericDocument.Builder<>("namespace", "id4", "type")
                                                 .build(),
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7253,7 +8738,8 @@ public class AppSearchImplTest {
                 "database2",
                 new GenericDocument.Builder<>("namespace", "id2", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // now package2 really is out of space
         e =
@@ -7266,7 +8752,8 @@ public class AppSearchImplTest {
                                         new GenericDocument.Builder<>("namespace", "id3", "type")
                                                 .build(),
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7314,6 +8801,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -7341,7 +8829,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index 3 documents
@@ -7352,7 +8841,8 @@ public class AppSearchImplTest {
                         .setPropertyString("body", "tablet")
                         .build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
@@ -7360,7 +8850,8 @@ public class AppSearchImplTest {
                         .setPropertyString("body", "tabby")
                         .build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
@@ -7368,7 +8859,8 @@ public class AppSearchImplTest {
                         .setPropertyString("body", "grabby")
                         .build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now we should get a failure
         GenericDocument document4 =
@@ -7382,7 +8874,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document4,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7394,7 +8887,9 @@ public class AppSearchImplTest {
                 "database",
                 "nothing",
                 new SearchSpec.Builder().build(),
-                /* removeStatsBuilder= */ null);
+                /* deletedIds= */ null,
+                /* removeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // Should still fail
         e =
@@ -7406,7 +8901,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document4,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7418,7 +8914,9 @@ public class AppSearchImplTest {
                 "database",
                 "tab",
                 new SearchSpec.Builder().build(),
-                /* removeStatsBuilder= */ null);
+                /* deletedIds= */ null,
+                /* removeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now doc4 and doc5 should work
         mAppSearchImpl.putDocument(
@@ -7426,13 +8924,15 @@ public class AppSearchImplTest {
                 "database",
                 document4,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
                 new GenericDocument.Builder<>("namespace", "id5", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // We only deleted 2 docs so the next one should fail again
         e =
@@ -7445,7 +8945,8 @@ public class AppSearchImplTest {
                                         new GenericDocument.Builder<>("namespace", "id6", "type")
                                                 .build(),
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7466,7 +8967,9 @@ public class AppSearchImplTest {
                                                 .setJoinSpec(
                                                         new JoinSpec.Builder("childProp").build())
                                                 .build(),
-                                        null));
+                                        /* deletedIds= */ null,
+                                        /* removeStatsBuilder= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getMessage())
                 .isEqualTo("JoinSpec not allowed in removeByQuery, but JoinSpec was provided");
     }
@@ -7512,6 +9015,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -7533,7 +9037,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index a document
@@ -7544,7 +9049,8 @@ public class AppSearchImplTest {
                         .setPropertyString("body", "id1.orig")
                         .build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         // Replace it with another doc
         mAppSearchImpl.putDocument(
                 "package",
@@ -7553,7 +9059,8 @@ public class AppSearchImplTest {
                         .setPropertyString("body", "id1.new")
                         .build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Index id2. This should pass but only because we check for replacements.
         mAppSearchImpl.putDocument(
@@ -7561,7 +9068,8 @@ public class AppSearchImplTest {
                 "database",
                 new GenericDocument.Builder<>("namespace", "id2", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now we should get a failure on id3
         GenericDocument document3 =
@@ -7575,7 +9083,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document3,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7624,6 +9133,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -7645,7 +9155,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index a document
@@ -7656,7 +9167,8 @@ public class AppSearchImplTest {
                         .setPropertyString("body", "id1.orig")
                         .build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         // Replace it with another doc
         mAppSearchImpl.putDocument(
                 "package",
@@ -7665,7 +9177,8 @@ public class AppSearchImplTest {
                         .setPropertyString("body", "id1.new")
                         .build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Reinitialize to make sure replacements are correctly accounted for by init
         mAppSearchImpl.close();
@@ -7706,6 +9219,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -7717,7 +9231,8 @@ public class AppSearchImplTest {
                 "database",
                 new GenericDocument.Builder<>("namespace", "id2", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now we should get a failure on id3
         GenericDocument document3 =
@@ -7731,7 +9246,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document3,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -7779,6 +9295,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -7793,7 +9310,8 @@ public class AppSearchImplTest {
                                         "database",
                                         /* suggestionQueryExpression= */ "t",
                                         new SearchSuggestionSpec.Builder(/* totalResultCount= */ 10)
-                                                .build()));
+                                                .build(),
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_INVALID_ARGUMENT);
         assertThat(e)
                 .hasMessageThat()
@@ -7842,6 +9360,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -7858,7 +9377,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index a document
@@ -7867,7 +9387,8 @@ public class AppSearchImplTest {
                 "database",
                 new GenericDocument.Builder<>("namespace", "id1", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // We should still be able to index another document even though we are over the
         // getPerPackageDocumentCountLimit threshold.
@@ -7878,7 +9399,8 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
     }
 
     @Test
@@ -7923,6 +9445,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -7939,7 +9462,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -7949,7 +9473,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -7959,7 +9484,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index a document
@@ -7968,7 +9494,8 @@ public class AppSearchImplTest {
                 "database",
                 new GenericDocument.Builder<>("namespace", "id1", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // We should still be able to index another document even though we are over the
         // getPerPackageDocumentCountLimit threshold.
@@ -7979,7 +9506,8 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Index a document in another package. We will now be at the limit start threshold.
         GenericDocument document3 =
@@ -7989,7 +9517,8 @@ public class AppSearchImplTest {
                 "database",
                 document3,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Both packages are at the maxPerPackageDocumentLimitCount and the limit is in force.
         // Neither should be able to add another document.
@@ -8004,7 +9533,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document4,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -8019,7 +9549,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document4,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -8031,7 +9562,8 @@ public class AppSearchImplTest {
                 "database",
                 document4,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
     }
 
     @Test
@@ -8076,6 +9608,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -8092,7 +9625,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index two documents
@@ -8101,7 +9635,8 @@ public class AppSearchImplTest {
                 "database",
                 new GenericDocument.Builder<>("namespace", "id1", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace", "id2", "type").build();
@@ -8110,7 +9645,8 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Now Index a replacement. This should not trigger the DocumentCountLimitStartThreshold
         // because the total number of living documents should still be two.
@@ -8119,7 +9655,8 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // We should be able to index one more document before triggering the limit.
         GenericDocument document3 =
@@ -8129,7 +9666,8 @@ public class AppSearchImplTest {
                 "database",
                 document3,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
     }
 
     @Test
@@ -8174,6 +9712,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -8190,7 +9729,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -8200,7 +9740,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index three documents in "package" and one in "package2". This will mean four total
@@ -8211,7 +9752,8 @@ public class AppSearchImplTest {
                 "database",
                 new GenericDocument.Builder<>("namespace", "id1", "type").build(),
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace", "id2", "type").build();
@@ -8220,7 +9762,8 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument document3 =
                 new GenericDocument.Builder<>("namespace", "id3", "type").build();
@@ -8229,7 +9772,8 @@ public class AppSearchImplTest {
                 "database",
                 document3,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument document4 =
                 new GenericDocument.Builder<>("namespace", "id4", "type").build();
@@ -8238,7 +9782,8 @@ public class AppSearchImplTest {
                 "database",
                 document4,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // The limit is in force. We should be unable to index another document. Even after we
         // delete one document, the system is still over the limit start threshold.
@@ -8253,14 +9798,20 @@ public class AppSearchImplTest {
                                         "database",
                                         document5,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
                 .contains("Package \"package\" exceeded limit of 1 documents");
 
         mAppSearchImpl.remove(
-                "package", "database", "namespace", "id2", /* removeStatsBuilder= */ null);
+                "package",
+                "database",
+                "namespace",
+                "id2",
+                /* removeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
         e =
                 assertThrows(
                         AppSearchException.class,
@@ -8270,7 +9821,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document5,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -8279,13 +9831,19 @@ public class AppSearchImplTest {
         // Removing another document will bring the system below the limit start threshold. Now,
         // adding another document can succeed.
         mAppSearchImpl.remove(
-                "package", "database", "namespace", "id3", /* removeStatsBuilder= */ null);
+                "package",
+                "database",
+                "namespace",
+                "id3",
+                /* removeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
                 document5,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
     }
 
     @Test
@@ -8330,6 +9888,7 @@ public class AppSearchImplTest {
                                 },
                                 new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -8367,7 +9926,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         internalSetSchemaResponse =
                 mAppSearchImpl.setSchema(
@@ -8377,7 +9937,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Index three documents in "package" and one in "package2". This will mean four total
@@ -8393,7 +9954,8 @@ public class AppSearchImplTest {
                 "database",
                 document1,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument document2 =
                 new GenericDocument.Builder<>("namespace", "id2", "type")
@@ -8405,7 +9967,8 @@ public class AppSearchImplTest {
                 "database",
                 document2,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument document3 =
                 new GenericDocument.Builder<>("namespace", "id3", "type")
@@ -8417,7 +9980,8 @@ public class AppSearchImplTest {
                 "database",
                 document3,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument document4 =
                 new GenericDocument.Builder<>("namespace", "id4", "type")
@@ -8429,7 +9993,8 @@ public class AppSearchImplTest {
                 "database",
                 document4,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // The limit is in force. We should be unable to index another document.
         GenericDocument document5 =
@@ -8446,7 +10011,8 @@ public class AppSearchImplTest {
                                         "database",
                                         document5,
                                         /* sendChangeNotifications= */ false,
-                                        /* logger= */ null));
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -8459,13 +10025,16 @@ public class AppSearchImplTest {
                 "database",
                 "evenOdd:odd",
                 new SearchSpec.Builder().build(),
-                /* removeStatsBuilder= */ null);
+                /* deletedIds= */ null,
+                /* removeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
         mAppSearchImpl.putDocument(
                 "package",
                 "database",
                 document5,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
     }
 
     @Test
@@ -8512,6 +10081,7 @@ public class AppSearchImplTest {
                         tempFolder,
                         config,
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(config),
                         /* icingSearchEngine= */ null,
@@ -8521,13 +10091,17 @@ public class AppSearchImplTest {
         byte[] digest1 = calculateDigest(data1);
         AppSearchBlobHandle handle1 =
                 AppSearchBlobHandle.createWithSha256(digest1, "package", "db1", "ns");
-        ParcelFileDescriptor writer1 = mAppSearchImpl.openWriteBlob("package", "db1", handle1);
+        ParcelFileDescriptor writer1 =
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db1", handle1, /* callStatsBuilder= */ null);
 
         byte[] data2 = generateRandomBytes(20 * 1024); // 20 KiB
         byte[] digest2 = calculateDigest(data2);
         AppSearchBlobHandle handle2 =
                 AppSearchBlobHandle.createWithSha256(digest2, "package", "db1", "ns");
-        ParcelFileDescriptor writer2 = mAppSearchImpl.openWriteBlob("package", "db1", handle2);
+        ParcelFileDescriptor writer2 =
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db1", handle2, /* callStatsBuilder= */ null);
 
         // Open 3rd fd will fail.
         byte[] data3 = generateRandomBytes(20 * 1024); // 20 KiB
@@ -8537,7 +10111,9 @@ public class AppSearchImplTest {
         AppSearchException e =
                 assertThrows(
                         AppSearchException.class,
-                        () -> mAppSearchImpl.openWriteBlob("package", "db1", handle3));
+                        () ->
+                                mAppSearchImpl.openWriteBlob(
+                                        "package", "db1", handle3, /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -8590,6 +10166,7 @@ public class AppSearchImplTest {
                         tempFolder,
                         config,
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         new JetpackRevocableFileDescriptorStore(config),
                         /* icingSearchEngine= */ null,
@@ -8602,25 +10179,35 @@ public class AppSearchImplTest {
                 AppSearchBlobHandle.createWithSha256(
                         digest, mContext.getPackageName(), "db1", "ns");
         try (ParcelFileDescriptor writePfd =
-                        mAppSearchImpl.openWriteBlob(mContext.getPackageName(), "db1", handle);
+                        mAppSearchImpl.openWriteBlob(
+                                mContext.getPackageName(),
+                                "db1",
+                                handle,
+                                /* callStatsBuilder= */ null);
                 OutputStream outputStream =
                         new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
             outputStream.write(data);
             outputStream.flush();
         }
-        mAppSearchImpl.commitBlob(mContext.getPackageName(), "db1", handle);
+        mAppSearchImpl.commitBlob(
+                mContext.getPackageName(), "db1", handle, /* callStatsBuilder= */ null);
 
         ParcelFileDescriptor reader1 =
-                mAppSearchImpl.openReadBlob(mContext.getPackageName(), "db1", handle);
+                mAppSearchImpl.openReadBlob(
+                        mContext.getPackageName(), "db1", handle, /* callStatsBuilder= */ null);
         ParcelFileDescriptor reader2 =
-                mAppSearchImpl.openReadBlob(mContext.getPackageName(), "db1", handle);
+                mAppSearchImpl.openReadBlob(
+                        mContext.getPackageName(), "db1", handle, /* callStatsBuilder= */ null);
         // Open 3rd fd will fail.
         AppSearchException e =
                 assertThrows(
                         AppSearchException.class,
                         () ->
                                 mAppSearchImpl.openReadBlob(
-                                        mContext.getPackageName(), "db1", handle));
+                                        mContext.getPackageName(),
+                                        "db1",
+                                        handle,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -8641,7 +10228,10 @@ public class AppSearchImplTest {
                         AppSearchException.class,
                         () ->
                                 mAppSearchImpl.openWriteBlob(
-                                        mContext.getPackageName(), "db1", handle2));
+                                        mContext.getPackageName(),
+                                        "db1",
+                                        handle2,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -8654,13 +10244,16 @@ public class AppSearchImplTest {
         // Close 1st fd and open 3rd fd will success
         reader1.close();
         ParcelFileDescriptor reader3 =
-                mAppSearchImpl.openReadBlob(mContext.getPackageName(), "db1", handle);
+                mAppSearchImpl.openReadBlob(
+                        mContext.getPackageName(), "db1", handle, /* callStatsBuilder= */ null);
 
         // GlobalOpenRead will share same limit.
         e =
                 assertThrows(
                         AppSearchException.class,
-                        () -> mAppSearchImpl.globalOpenReadBlob(handle, mSelfCallerAccess));
+                        () ->
+                                mAppSearchImpl.globalOpenReadBlob(
+                                        handle, mSelfCallerAccess, /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -8671,7 +10264,9 @@ public class AppSearchImplTest {
                                 + " descriptors must be closed to open additional ones.");
         // Close 2st fd and global open fd will success
         reader2.close();
-        ParcelFileDescriptor reader4 = mAppSearchImpl.globalOpenReadBlob(handle, mSelfCallerAccess);
+        ParcelFileDescriptor reader4 =
+                mAppSearchImpl.globalOpenReadBlob(
+                        handle, mSelfCallerAccess, /* callStatsBuilder= */ null);
 
         // Keep opening will fail
         e =
@@ -8679,7 +10274,10 @@ public class AppSearchImplTest {
                         AppSearchException.class,
                         () ->
                                 mAppSearchImpl.openReadBlob(
-                                        mContext.getPackageName(), "db1", handle));
+                                        mContext.getPackageName(),
+                                        "db1",
+                                        handle,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -8691,7 +10289,9 @@ public class AppSearchImplTest {
         e =
                 assertThrows(
                         AppSearchException.class,
-                        () -> mAppSearchImpl.globalOpenReadBlob(handle, mSelfCallerAccess));
+                        () ->
+                                mAppSearchImpl.globalOpenReadBlob(
+                                        handle, mSelfCallerAccess, /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(RESULT_OUT_OF_SPACE);
         assertThat(e)
                 .hasMessageThat()
@@ -8722,7 +10322,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer twice, on different packages.
@@ -8750,7 +10351,8 @@ public class AppSearchImplTest {
                 "database1",
                 validDoc,
                 /* sendChangeNotifications= */ true,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Dispatch notifications and empty the observers
         mAppSearchImpl.dispatchAndClearChangeNotifications();
@@ -8766,7 +10368,8 @@ public class AppSearchImplTest {
                 "database1",
                 doc2,
                 /* sendChangeNotifications= */ true,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Observer should still have received this data from its registration on
         // context.getPackageName(), as we only removed the copy from fakePackage.
@@ -8797,6 +10400,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -8810,7 +10414,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add a document and persist it.
@@ -8821,8 +10426,14 @@ public class AppSearchImplTest {
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.LITE);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.LITE,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         AppSearchException e =
                 assertThrows(
@@ -8834,7 +10445,8 @@ public class AppSearchImplTest {
                                         "namespace1",
                                         "id1",
                                         /* typePropertyPaths= */ Collections.emptyMap(),
-                                        /* callerAccess= */ mSelfCallerAccess));
+                                        /* callerAccess= */ mSelfCallerAccess,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_NOT_FOUND);
         assertThat(e.getMessage()).isEqualTo("Document (namespace1, id1) not found.");
     }
@@ -8854,6 +10466,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -8867,7 +10480,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add a document and persist it.
@@ -8878,8 +10492,14 @@ public class AppSearchImplTest {
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.LITE);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.LITE,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         GenericDocument getResult =
                 mAppSearchImpl.globalGetDocument(
@@ -8888,7 +10508,8 @@ public class AppSearchImplTest {
                         "namespace1",
                         "id1",
                         /* typePropertyPaths= */ Collections.emptyMap(),
-                        /* callerAccess= */ mSelfCallerAccess);
+                        /* callerAccess= */ mSelfCallerAccess,
+                        /* callStatsBuilder= */ null);
         assertThat(getResult).isEqualTo(document);
     }
 
@@ -8907,6 +10528,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -8920,7 +10542,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add a document and persist it.
@@ -8931,8 +10554,14 @@ public class AppSearchImplTest {
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.LITE);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.LITE,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         AppSearchException e =
                 assertThrows(
@@ -8944,7 +10573,8 @@ public class AppSearchImplTest {
                                         "namespace1",
                                         "id2",
                                         /* typePropertyPaths= */ Collections.emptyMap(),
-                                        /* callerAccess= */ mSelfCallerAccess));
+                                        /* callerAccess= */ mSelfCallerAccess,
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getResultCode()).isEqualTo(AppSearchResult.RESULT_NOT_FOUND);
         assertThat(e.getMessage()).isEqualTo("Document (namespace1, id2) not found.");
     }
@@ -8979,6 +10609,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -8992,7 +10623,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add a document and persist it.
@@ -9003,8 +10635,14 @@ public class AppSearchImplTest {
                 "database",
                 document,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.LITE);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.LITE,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         AppSearchException unauthorizedException =
                 assertThrows(
@@ -9017,10 +10655,16 @@ public class AppSearchImplTest {
                                         "id1",
                                         /* typePropertyPaths= */ Collections.emptyMap(),
                                         new CallerAccess(
-                                                /* callingPackageName= */ "invisiblePackage")));
+                                                /* callingPackageName= */ "invisiblePackage"),
+                                        /* callStatsBuilder= */ null));
 
         mAppSearchImpl.remove(
-                "package", "database", "namespace1", "id1", /* removeStatsBuilder= */ null);
+                "package",
+                "database",
+                "namespace1",
+                "id1",
+                /* removeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         AppSearchException noDocException =
                 assertThrows(
@@ -9033,7 +10677,8 @@ public class AppSearchImplTest {
                                         "id1",
                                         /* typePropertyPaths= */ Collections.emptyMap(),
                                         new CallerAccess(
-                                                /* callingPackageName= */ "visiblePackage")));
+                                                /* callingPackageName= */ "visiblePackage"),
+                                        /* callStatsBuilder= */ null));
 
         assertThat(noDocException.getResultCode()).isEqualTo(unauthorizedException.getResultCode());
         assertThat(noDocException.getMessage()).isEqualTo(unauthorizedException.getMessage());
@@ -9058,7 +10703,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ ImmutableList.of(visibilityConfig),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         String prefix = PrefixUtil.createPrefix("package", "database1");
 
@@ -9078,7 +10724,8 @@ public class AppSearchImplTest {
                                 DOCUMENT_VISIBILITY_DATABASE_NAME,
                                 VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                 /* id= */ prefix + "Email",
-                                /* typePropertyPaths= */ Collections.emptyMap()),
+                                /* typePropertyPaths= */ Collections.emptyMap(),
+                                /* callStatsBuilder= */ null),
                         /* androidVOverlayDocument= */ null);
         assertThat(actualDocument).isEqualTo(expectedDocument);
     }
@@ -9103,7 +10750,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ ImmutableList.of(visibilityConfig1),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         String prefix1 = PrefixUtil.createPrefix("package1", "database");
 
@@ -9123,7 +10771,8 @@ public class AppSearchImplTest {
                                 DOCUMENT_VISIBILITY_DATABASE_NAME,
                                 VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                 /* id= */ prefix1 + "Email1",
-                                /* typePropertyPaths= */ Collections.emptyMap()),
+                                /* typePropertyPaths= */ Collections.emptyMap(),
+                                /* callStatsBuilder= */ null),
                         /* androidVOverlayDocument= */ null);
 
         assertThat(actualDocument1).isEqualTo(expectedDocument1);
@@ -9146,7 +10795,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ ImmutableList.of(visibilityConfig2),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         String prefix2 = PrefixUtil.createPrefix("package2", "database");
 
@@ -9166,7 +10816,8 @@ public class AppSearchImplTest {
                                 DOCUMENT_VISIBILITY_DATABASE_NAME,
                                 VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                 /* id= */ prefix2 + "Email2",
-                                /* typePropertyPaths= */ Collections.emptyMap()),
+                                /* typePropertyPaths= */ Collections.emptyMap(),
+                                /* callStatsBuilder= */ null),
                         /* androidVOverlayDocument= */ null);
         assertThat(actualDocument2).isEqualTo(expectedDocument2);
 
@@ -9181,7 +10832,8 @@ public class AppSearchImplTest {
                                 DOCUMENT_VISIBILITY_DATABASE_NAME,
                                 VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                 /* id= */ prefix1 + "Email1",
-                                /* typePropertyPaths= */ Collections.emptyMap()),
+                                /* typePropertyPaths= */ Collections.emptyMap(),
+                                /* callStatsBuilder= */ null),
                         /* androidVOverlayDocument= */ null);
         assertThat(actualDocument1).isEqualTo(expectedDocument1);
     }
@@ -9207,7 +10859,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ ImmutableList.of(visibilityConfig),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         String prefix = PrefixUtil.createPrefix("package", "database1");
         InternalVisibilityConfig expectedDocument =
@@ -9224,7 +10877,8 @@ public class AppSearchImplTest {
                                 DOCUMENT_VISIBILITY_DATABASE_NAME,
                                 VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                 /* id= */ prefix + "Email",
-                                /* typePropertyPaths= */ Collections.emptyMap()),
+                                /* typePropertyPaths= */ Collections.emptyMap(),
+                                /* callStatsBuilder= */ null),
                         /* androidVOverlayDocument= */ null);
         assertThat(actualDocument).isEqualTo(expectedDocument);
 
@@ -9237,7 +10891,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ ImmutableList.of(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         // All-default visibility document won't be saved in AppSearch.
         assertThat(mAppSearchImpl.mDocumentVisibilityStoreLocked.getVisibility(prefix + "Email"))
@@ -9252,7 +10907,8 @@ public class AppSearchImplTest {
                                         DOCUMENT_VISIBILITY_DATABASE_NAME,
                                         VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                         /* id= */ prefix + "Email",
-                                        /* typePropertyPaths= */ Collections.emptyMap()));
+                                        /* typePropertyPaths= */ Collections.emptyMap(),
+                                        /* callStatsBuilder= */ null));
         assertThat(e)
                 .hasMessageThat()
                 .contains("Document (VS#Pkg$VS#Db/, package$database1/Email) not found.");
@@ -9278,7 +10934,8 @@ public class AppSearchImplTest {
                 /* visibilityConfigs= */ ImmutableList.of(visibilityConfig),
                 /* forceOverride= */ false,
                 /* version= */ 0,
-                /* setSchemaStatsBuilder= */ null);
+                /* setSchemaStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
         String prefix = PrefixUtil.createPrefix("package", "database1");
         InternalVisibilityConfig expectedDocument =
                 new InternalVisibilityConfig.Builder(prefix + "Email")
@@ -9295,7 +10952,8 @@ public class AppSearchImplTest {
                                 DOCUMENT_VISIBILITY_DATABASE_NAME,
                                 VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                 /* id= */ prefix + "Email",
-                                /* typePropertyPaths= */ Collections.emptyMap()),
+                                /* typePropertyPaths= */ Collections.emptyMap(),
+                                /* callStatsBuilder= */ null),
                         /* androidVOverlayDocument= */ null);
         assertThat(actualDocument).isEqualTo(expectedDocument);
 
@@ -9307,7 +10965,8 @@ public class AppSearchImplTest {
                 /* visibilityConfigs= */ ImmutableList.of(),
                 /* forceOverride= */ false,
                 /* version= */ 0,
-                /* setSchemaStatsBuilder= */ null);
+                /* setSchemaStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
 
         // add the schema back with an all default visibility setting.
         mAppSearchImpl.setSchema(
@@ -9317,7 +10976,8 @@ public class AppSearchImplTest {
                 /* visibilityConfigs= */ ImmutableList.of(),
                 /* forceOverride= */ false,
                 /* version= */ 0,
-                /* setSchemaStatsBuilder= */ null);
+                /* setSchemaStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
         // All-default visibility document won't be saved in AppSearch.
         assertThat(mAppSearchImpl.mDocumentVisibilityStoreLocked.getVisibility(prefix + "Email"))
                 .isNull();
@@ -9331,7 +10991,8 @@ public class AppSearchImplTest {
                                         DOCUMENT_VISIBILITY_DATABASE_NAME,
                                         VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                         /* id= */ prefix + "Email",
-                                        /* typePropertyPaths= */ Collections.emptyMap()));
+                                        /* typePropertyPaths= */ Collections.emptyMap(),
+                                        /* callStatsBuilder= */ null));
         assertThat(e)
                 .hasMessageThat()
                 .contains("Document (VS#Pkg$VS#Db/, package$database1/Email) not found.");
@@ -9355,7 +11016,8 @@ public class AppSearchImplTest {
                         ImmutableList.of(visibilityConfig),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // close and re-open AppSearchImpl, the visibility document retains
@@ -9366,6 +11028,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -9388,7 +11051,8 @@ public class AppSearchImplTest {
                                 DOCUMENT_VISIBILITY_DATABASE_NAME,
                                 VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                 /* id= */ prefix + "Email",
-                                /* typePropertyPaths= */ Collections.emptyMap()),
+                                /* typePropertyPaths= */ Collections.emptyMap(),
+                                /* callStatsBuilder= */ null),
                         /* androidVOverlayDocument= */ null);
         assertThat(actualDocument).isEqualTo(expectedDocument);
 
@@ -9401,7 +11065,8 @@ public class AppSearchImplTest {
                         ImmutableList.of(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // close and re-open AppSearchImpl, the visibility document removed
@@ -9412,6 +11077,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -9429,7 +11095,8 @@ public class AppSearchImplTest {
                                         DOCUMENT_VISIBILITY_DATABASE_NAME,
                                         VisibilityToDocumentConverter.VISIBILITY_DOCUMENT_NAMESPACE,
                                         /* id= */ prefix + "Email",
-                                        /* typePropertyPaths= */ Collections.emptyMap()));
+                                        /* typePropertyPaths= */ Collections.emptyMap(),
+                                        /* callStatsBuilder= */ null));
         assertThat(e)
                 .hasMessageThat()
                 .contains("Document (VS#Pkg$VS#Db/, packageName$databaseName/Email) not found.");
@@ -9450,6 +11117,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -9467,7 +11135,8 @@ public class AppSearchImplTest {
                                         .build()),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Get this schema as another package
@@ -9476,7 +11145,8 @@ public class AppSearchImplTest {
                         "package",
                         "database",
                         new CallerAccess(
-                                /* callingPackageName= */ "com.android.appsearch.fake.package"));
+                                /* callingPackageName= */ "com.android.appsearch.fake.package"),
+                        /* callStatsBuilder= */ null);
         assertThat(getResponse.getSchemas()).containsExactlyElementsIn(schemas);
         assertThat(getResponse.getSchemaTypesNotDisplayedBySystem()).containsExactly("Type");
     }
@@ -9492,7 +11162,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ ImmutableList.of(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Try to get the schema of a nonexistent package.
@@ -9500,7 +11171,8 @@ public class AppSearchImplTest {
                 mAppSearchImpl.getSchema(
                         "com.android.appsearch.fake.package",
                         "database",
-                        new CallerAccess(/* callingPackageName= */ "package"));
+                        new CallerAccess(/* callingPackageName= */ "package"),
+                        /* callStatsBuilder= */ null);
         assertThat(getResponse.getSchemas()).isEmpty();
         assertThat(getResponse.getSchemaTypesNotDisplayedBySystem()).isEmpty();
     }
@@ -9518,14 +11190,16 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ ImmutableList.of(),
                         /* forceOverride= */ false,
                         /* version= */ 1,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         GetSchemaResponse getResponse =
                 mAppSearchImpl.getSchema(
                         "package",
                         "database",
                         new CallerAccess(
-                                /* callingPackageName= */ "com.android.appsearch.fake.package"));
+                                /* callingPackageName= */ "com.android.appsearch.fake.package"),
+                        /* callStatsBuilder= */ null);
         assertThat(getResponse.getSchemas()).isEmpty();
         assertThat(getResponse.getSchemaTypesNotDisplayedBySystem()).isEmpty();
         assertThat(getResponse.getVersion()).isEqualTo(0);
@@ -9536,7 +11210,8 @@ public class AppSearchImplTest {
                 mAppSearchImpl.getSchema(
                         "package",
                         "database",
-                        new CallerAccess(/* callingPackageName= */ "package"));
+                        new CallerAccess(/* callingPackageName= */ "package"),
+                        /* callStatsBuilder= */ null);
         assertThat(getResponse.getSchemas()).containsExactlyElementsIn(schemas);
     }
 
@@ -9573,6 +11248,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         mockVisibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -9593,7 +11269,8 @@ public class AppSearchImplTest {
                                         .build()),
                         /* forceOverride= */ false,
                         /* version= */ 1,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         GetSchemaResponse getResponse =
@@ -9601,7 +11278,8 @@ public class AppSearchImplTest {
                         "package",
                         "database",
                         new CallerAccess(
-                                /* callingPackageName= */ "com.android.appsearch.fake.package"));
+                                /* callingPackageName= */ "com.android.appsearch.fake.package"),
+                        /* callStatsBuilder= */ null);
         assertThat(getResponse.getSchemas()).containsExactly(schemas.get(0));
         assertThat(getResponse.getSchemaTypesNotDisplayedBySystem()).containsExactly("VisibleType");
         assertThat(getResponse.getVersion()).isEqualTo(1);
@@ -9660,6 +11338,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         publicAclMockChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -9686,26 +11365,36 @@ public class AppSearchImplTest {
                         visibilityConfigs,
                         /* forceOverride= */ true,
                         /* version= */ 1,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Verify access to schemas based on calling package
         GetSchemaResponse getResponse =
                 mAppSearchImpl.getSchema(
-                        "package", "database", new CallerAccess(pkgA.getPackageName()));
+                        "package",
+                        "database",
+                        new CallerAccess(pkgA.getPackageName()),
+                        /* callStatsBuilder= */ null);
         assertThat(getResponse.getSchemas()).containsExactly(schemas.get(0));
         assertThat(getResponse.getPubliclyVisibleSchemas()).containsKey("PublicTypeA");
 
         getResponse =
                 mAppSearchImpl.getSchema(
-                        "package", "database", new CallerAccess(pkgB.getPackageName()));
+                        "package",
+                        "database",
+                        new CallerAccess(pkgB.getPackageName()),
+                        /* callStatsBuilder= */ null);
         assertThat(getResponse.getSchemas()).containsExactly(schemas.get(0), schemas.get(1));
         assertThat(getResponse.getPubliclyVisibleSchemas()).containsKey("PublicTypeA");
         assertThat(getResponse.getPubliclyVisibleSchemas()).containsKey("PublicTypeB");
 
         getResponse =
                 mAppSearchImpl.getSchema(
-                        "package", "database", new CallerAccess(pkgC.getPackageName()));
+                        "package",
+                        "database",
+                        new CallerAccess(pkgC.getPackageName()),
+                        /* callStatsBuilder= */ null);
         assertThat(getResponse.getSchemas()).containsExactlyElementsIn(schemas);
         assertThat(getResponse.getPubliclyVisibleSchemas()).containsKey("PublicTypeA");
         assertThat(getResponse.getPubliclyVisibleSchemas()).containsKey("PublicTypeB");
@@ -9767,6 +11456,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         publicAclMockChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -9793,7 +11483,8 @@ public class AppSearchImplTest {
                         visibilityConfigs,
                         /* forceOverride= */ true,
                         /* version= */ 1,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Now check for documents
@@ -9803,21 +11494,24 @@ public class AppSearchImplTest {
                         DOCUMENT_ANDROID_V_OVERLAY_DATABASE_NAME,
                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                         "package$database/PublicTypeA",
-                        Collections.emptyMap());
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         GenericDocument visibilityOverlayB =
                 mAppSearchImpl.getDocument(
                         VISIBILITY_PACKAGE_NAME,
                         DOCUMENT_ANDROID_V_OVERLAY_DATABASE_NAME,
                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                         "package$database/PublicTypeB",
-                        Collections.emptyMap());
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
         GenericDocument visibilityOverlayC =
                 mAppSearchImpl.getDocument(
                         VISIBILITY_PACKAGE_NAME,
                         DOCUMENT_ANDROID_V_OVERLAY_DATABASE_NAME,
                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                         "package$database/PublicTypeC",
-                        Collections.emptyMap());
+                        Collections.emptyMap(),
+                        /* callStatsBuilder= */ null);
 
         AndroidVOverlayProto overlayProtoA =
                 AndroidVOverlayProto.newBuilder()
@@ -9878,7 +11572,8 @@ public class AppSearchImplTest {
                         visibilityConfigs,
                         /* forceOverride= */ true,
                         /* version= */ 1,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponseRemoved.isSuccess()).isTrue();
 
         // Now check for documents again
@@ -9891,7 +11586,8 @@ public class AppSearchImplTest {
                                         DOCUMENT_VISIBILITY_DATABASE_NAME,
                                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                                         "package$database/PublicTypeA",
-                                        Collections.emptyMap()));
+                                        Collections.emptyMap(),
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getMessage()).endsWith("not found.");
         e =
                 assertThrows(
@@ -9902,7 +11598,8 @@ public class AppSearchImplTest {
                                         DOCUMENT_VISIBILITY_DATABASE_NAME,
                                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                                         "package$database/PublicTypeB",
-                                        Collections.emptyMap()));
+                                        Collections.emptyMap(),
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getMessage()).endsWith("not found.");
         e =
                 assertThrows(
@@ -9913,7 +11610,8 @@ public class AppSearchImplTest {
                                         DOCUMENT_VISIBILITY_DATABASE_NAME,
                                         VisibilityToDocumentConverter.ANDROID_V_OVERLAY_NAMESPACE,
                                         "package$database/PublicTypeC",
-                                        Collections.emptyMap()));
+                                        Collections.emptyMap(),
+                                        /* callStatsBuilder= */ null));
         assertThat(e.getMessage()).endsWith("not found.");
     }
 
@@ -9928,7 +11626,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer
@@ -9948,7 +11647,8 @@ public class AppSearchImplTest {
                 "database1",
                 new GenericDocument.Builder<>("namespace1", "id1", "Type1").build(),
                 /* sendChangeNotifications= */ true,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         assertThat(observer.getSchemaChanges()).isEmpty();
         assertThat(observer.getDocumentChanges()).isEmpty();
 
@@ -9976,6 +11676,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         rejectChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -9990,7 +11691,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer
@@ -10010,7 +11712,8 @@ public class AppSearchImplTest {
                 "database1",
                 new GenericDocument.Builder<>("namespace1", "id1", "Type1").build(),
                 /* sendChangeNotifications= */ true,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         assertThat(observer.getSchemaChanges()).isEmpty();
         assertThat(observer.getDocumentChanges()).isEmpty();
 
@@ -10038,7 +11741,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer from a simulated different package
@@ -10058,7 +11762,8 @@ public class AppSearchImplTest {
                 "database1",
                 new GenericDocument.Builder<>("namespace1", "id1", "Type1").build(),
                 /* sendChangeNotifications= */ true,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         assertThat(observer.getSchemaChanges()).isEmpty();
         assertThat(observer.getDocumentChanges()).isEmpty();
 
@@ -10096,6 +11801,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         visibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -10110,7 +11816,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer
@@ -10130,7 +11837,8 @@ public class AppSearchImplTest {
                 "database1",
                 new GenericDocument.Builder<>("namespace1", "id1", "Type1").build(),
                 /* sendChangeNotifications= */ true,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         assertThat(observer.getSchemaChanges()).isEmpty();
         assertThat(observer.getDocumentChanges()).isEmpty();
 
@@ -10160,6 +11868,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         rejectChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -10174,7 +11883,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer
@@ -10194,7 +11904,8 @@ public class AppSearchImplTest {
                 "database1",
                 new GenericDocument.Builder<>("namespace1", "id1", "Type1").build(),
                 /* sendChangeNotifications= */ true,
-                /* logger= */ null);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
         assertThat(observer.getSchemaChanges()).isEmpty();
         assertThat(observer.getDocumentChanges()).isEmpty();
 
@@ -10226,7 +11937,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         assertThat(observer.getSchemaChanges()).isEmpty();
         assertThat(observer.getDocumentChanges()).isEmpty();
@@ -10252,7 +11964,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         assertThat(observer.getSchemaChanges()).isEmpty();
         assertThat(observer.getDocumentChanges()).isEmpty();
@@ -10281,7 +11994,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer
@@ -10302,7 +12016,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Dispatch notifications
@@ -10337,7 +12052,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer
@@ -10368,7 +12084,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 1,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Dispatch notifications
@@ -10398,7 +12115,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 2,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Dispatch notifications
@@ -10441,7 +12159,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer that only listens for Type2
@@ -10480,7 +12199,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Dispatch notifications
@@ -10535,6 +12255,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         visibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -10572,7 +12293,8 @@ public class AppSearchImplTest {
                                         .build()),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Notifications of addition should now be dispatched
@@ -10603,7 +12325,8 @@ public class AppSearchImplTest {
                                 new InternalVisibilityConfig.Builder("Type2").build()),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Dispatch notifications. This should look like a deletion of Type2.
@@ -10642,7 +12365,8 @@ public class AppSearchImplTest {
                                 new InternalVisibilityConfig.Builder("Type2").build()),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         assertThat(observer.getSchemaChanges()).isEmpty();
@@ -10680,7 +12404,8 @@ public class AppSearchImplTest {
                                         .build()),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Dispatch notifications. This should look like a creation of Type2.
@@ -10723,6 +12448,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         visibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -10755,7 +12481,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer
@@ -10794,7 +12521,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Dispatch notifications
@@ -10837,6 +12565,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         visibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -10853,7 +12582,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer
@@ -10874,7 +12604,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Dispatch notifications. Nothing should appear since Type1 is not visible to us.
@@ -10893,7 +12624,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         assertThat(observer.getSchemaChanges()).isEmpty();
         assertThat(observer.getDocumentChanges()).isEmpty();
@@ -10946,6 +12678,7 @@ public class AppSearchImplTest {
                         new AppSearchConfigImpl(
                                 new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         visibilityChecker,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -10964,7 +12697,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register three observers: one in each package, and another in package1 with a filter.
@@ -11001,7 +12735,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Dispatch notifications.
@@ -11062,7 +12797,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 1,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Register an observer
@@ -11102,7 +12838,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 2,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isFalse();
         SetSchemaResponse setSchemaResponse = internalSetSchemaResponse.getSetSchemaResponse();
         assertThat(setSchemaResponse.getDeletedTypes()).isEmpty();
@@ -11125,7 +12862,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ true,
                         /* version= */ 3,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* calLStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
         assertThat(observer.getSchemaChanges()).isEmpty();
         assertThat(observer.getDocumentChanges()).isEmpty();
@@ -11165,12 +12903,13 @@ public class AppSearchImplTest {
                         mAppSearchDir,
                         mUnlimitedConfig,
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         modifiedIcingInstance,
                         ALWAYS_OPTIMIZE);
         List<SchemaTypeConfigProto> existingSchemas =
-                mAppSearchImpl.getSchemaProtoLocked().getTypesList();
+                mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList();
 
         List<AppSearchSchema> schemas =
                 Collections.singletonList(new AppSearchSchema.Builder("Email").build());
@@ -11183,7 +12922,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Create expected schemaType proto.
@@ -11223,7 +12963,7 @@ public class AppSearchImplTest {
         List<SchemaTypeConfigProto> expectedTypes = new ArrayList<>();
         expectedTypes.addAll(existingSchemas);
         expectedTypes.addAll(expectedProto.getTypesList());
-        assertThat(mAppSearchImpl.getSchemaProtoLocked().getTypesList())
+        assertThat(mAppSearchImpl.getSchemaProtoLocked(/* callStatsBuilder= */ null).getTypesList())
                 .containsExactlyElementsIn(expectedTypes);
     }
 
@@ -11234,7 +12974,8 @@ public class AppSearchImplTest {
                         "packageName",
                         "dbName",
                         new GetByDocumentIdRequest.Builder("namespace").build(),
-                        /* callerAccess= */ null);
+                        /* callerAccess= */ null,
+                        /* callStatsBuilder= */ null);
 
         assertThat(batchGetResult.getAll()).isEmpty();
     }
@@ -11257,6 +12998,7 @@ public class AppSearchImplTest {
                                     }
                                 }),
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
@@ -11288,7 +13030,8 @@ public class AppSearchImplTest {
                         /* visibilityConfigs= */ Collections.emptyList(),
                         /* forceOverride= */ false,
                         /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Add a large document
@@ -11304,12 +13047,19 @@ public class AppSearchImplTest {
                 "database",
                 largeDoc,
                 /* sendChangeNotifications= */ false,
-                /* logger= */ null);
-        mAppSearchImpl.optimize(/* builder= */ null);
-        mAppSearchImpl.persistToDisk(PersistType.Code.LITE);
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        mAppSearchImpl.optimize(/* optimizeStatsBuilder= */ null, /* callStatsBuilder= */ null);
+        mAppSearchImpl.persistToDisk(
+                "package",
+                BaseStats.CALL_TYPE_PUT_DOCUMENT,
+                PersistType.Code.LITE,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
 
         // Record storage size (the document should be compressed)
-        StorageInfoProto storageInfo = mAppSearchImpl.getRawStorageInfoProto();
+        StorageInfoProto storageInfo =
+                mAppSearchImpl.getRawStorageInfoProto(/* callStatsBuilder= */ null);
         long compressedSize = storageInfo.getDocumentStorageInfo().getDocumentLogSize();
         assertThat(compressedSize).isGreaterThan(0);
 
@@ -11330,21 +13080,729 @@ public class AppSearchImplTest {
                         mAppSearchDir,
                         configLargeThreshold,
                         /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
                         /* visibilityChecker= */ null,
                         /* revocableFileDescriptorStore= */ null,
                         /* icingSearchEngine= */ null,
                         ALWAYS_OPTIMIZE);
 
         // Run optimize, and test that the document is decompressed based on the new threshold.
-        mAppSearchImpl.optimize(/* builder= */ null);
+        mAppSearchImpl.optimize(/* optimizeStatsBuilder= */ null, /* callStatsBuilder= */ null);
 
         // Record storage size again (should be uncompressed)
-        storageInfo = mAppSearchImpl.getRawStorageInfoProto();
+        storageInfo = mAppSearchImpl.getRawStorageInfoProto(/* callStatsBuilder= */ null);
         long uncompressedSize = storageInfo.getDocumentStorageInfo().getDocumentLogSize();
         assertThat(uncompressedSize).isGreaterThan(0);
 
         // Check that previous size (compressed) is smaller than the latter (uncompressed)
         assertThat(compressedSize).isLessThan(uncompressedSize);
+    }
+
+    @Test
+    public void testClearAndDestroy() throws Exception {
+        // Set schema
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_NONE)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_NONE)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+
+        // Add a large document
+        GenericDocument doc1 =
+                new GenericDocument.Builder<>("namespace", "id1", "Type")
+                        .setPropertyString("body", "foo")
+                        .build();
+        mAppSearchImpl.putDocument(
+                "package",
+                "database",
+                doc1,
+                /* sendChangeNotifications= */ false,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+
+        // Sanity check that mAppSearchDir exists.
+        assertThat(mAppSearchDir.exists()).isTrue();
+
+        // Call clearAndDestroy.
+        mAppSearchImpl.clearAndDestroy();
+
+        // mAppSearchDir does not exist afterwards.
+        assertThat(mAppSearchDir.exists()).isFalse();
+
+        // Requests should be rejected afterwards.
+        GenericDocument doc2 =
+                new GenericDocument.Builder<>("namespace", "id2", "Type")
+                        .setPropertyString("body", "bar")
+                        .build();
+        IllegalStateException e =
+                assertThrows(
+                        IllegalStateException.class,
+                        () ->
+                                mAppSearchImpl.putDocument(
+                                        "package",
+                                        "database",
+                                        doc2,
+                                        /* sendChangeNotifications= */ false,
+                                        /* logger= */ null,
+                                        /* callStatsBuilder= */ null));
+        assertThat(e).hasMessageThat().contains("Trying to use a closed AppSearchImpl instance");
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_BLOB_STORE)
+    public void testClearAndDestroy_shouldRevokeFileDescriptor() throws Exception {
+        mAppSearchImpl.close();
+        // Initialize AppSearch with revocable file descriptor store.
+        mAppSearchImpl =
+                AppSearchImpl.create(
+                        mAppSearchDir,
+                        new AppSearchConfigImpl(
+                                new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
+                        /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
+                        /* visibilityChecker= */ null,
+                        new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
+                        /* icingSearchEngine= */ null,
+                        ALWAYS_OPTIMIZE);
+        byte[] data = generateRandomBytes(20 * 1024); // 20 KiB
+        byte[] digest = calculateDigest(data);
+        AppSearchBlobHandle handle =
+                AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "ns");
+
+        try (ParcelFileDescriptor writePfd =
+                mAppSearchImpl.openWriteBlob(
+                        "package", "db1", handle, /* callStatsBuilder= */ null)) {
+            // Can write data.
+            try (FileOutputStream outputStream =
+                    new FileOutputStream(writePfd.getFileDescriptor())) {
+                outputStream.write(data);
+            }
+            // clearAndDestroy will revoke all sent fds.
+            mAppSearchImpl.clearAndDestroy();
+            assertThrows(
+                    IOException.class,
+                    () -> {
+                        try (FileOutputStream outputStream =
+                                new FileOutputStream(writePfd.getFileDescriptor())) {
+                            outputStream.write(data);
+                        }
+                    });
+        }
+    }
+
+    @Test
+    public void testGetAndResetNeedPersistToDisk_returnsTrueForNewSetSchema() throws Exception {
+        // Set schema
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_NONE)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_NONE)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+    }
+
+    @Test
+    public void testGetAndResetNeedPersistToDisk_returnsTrueForDeletedSetSchema() throws Exception {
+        // Set schema
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_NONE)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_NONE)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse1 =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse1.isSuccess()).isTrue();
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Delete the schema by calling SetSchema with empty list. Need persistToDisk.
+        InternalSetSchemaResponse internalSetSchemaResponse2 =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        /* schemas= */ Collections.emptyList(),
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ true,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse2.isSuccess()).isTrue();
+        assertThat(internalSetSchemaResponse2.getSetSchemaResponse().getDeletedTypes()).hasSize(1);
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+    }
+
+    @Test
+    public void testGetAndResetNeedPersistToDisk_returnsTrueForIncompatibleSetSchema()
+            throws Exception {
+        // Set schema
+        List<AppSearchSchema> schemas1 =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_NONE)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_NONE)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse1 =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas1,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse1.isSuccess()).isTrue();
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Set schema again with incompatible changes (property cardinality OPTIONAL -> REQUIRED).
+        // Need persistToDisk.
+        List<AppSearchSchema> schemas2 =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_REQUIRED)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_NONE)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_NONE)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse2 =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas2,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ true,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse2.isSuccess()).isTrue();
+        assertThat(internalSetSchemaResponse2.getSetSchemaResponse().getIncompatibleTypes())
+                .hasSize(1);
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+    }
+
+    @Test
+    public void testGetAndResetNeedPersistToDisk_returnsTrueForIndexIncompatibleSetSchema()
+            throws Exception {
+        // Set schema
+        List<AppSearchSchema> schemas1 =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_NONE)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_NONE)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse1 =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas1,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse1.isSuccess()).isTrue();
+
+        // Put 1 document to trigger index rebuild for the next setSchema call.
+        GenericDocument document =
+                new GenericDocument.Builder<>("namespace", "id", "Type")
+                        .setPropertyString("body", "foo bar baz")
+                        .build();
+        mAppSearchImpl.putDocument(
+                "package",
+                "database",
+                document,
+                /* sendChangeNotifications= */ false,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Set schema again with index incompatible changes. Need persistToDisk.
+        List<AppSearchSchema> schemas2 =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_PREFIXES)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_PLAIN)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse2 =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas2,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse2.isSuccess()).isTrue();
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+    }
+
+    @Test
+    public void testGetAndResetNeedPersistToDisk_returnsFalseForSameSetSchema() throws Exception {
+        // Set schema
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_NONE)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_NONE)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse1 =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse1.isSuccess()).isTrue();
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Set the same schema again. No need persistToDisk.
+        InternalSetSchemaResponse internalSetSchemaResponse2 =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse2.isSuccess()).isTrue();
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+    }
+
+    @Test
+    public void testGetAndResetNeedPersistToDisk_returnsTrueForSameSetSchemaWithVisibilityChange()
+            throws Exception {
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_NONE)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_NONE)
+                                                .build())
+                                .build());
+        InternalVisibilityConfig visibilityConfig =
+                new InternalVisibilityConfig.Builder("Type")
+                        .setNotDisplayedBySystem(true)
+                        .addVisibleToPackage(new PackageIdentifier("pkgBar", new byte[32]))
+                        .build();
+
+        // Set schema without visibility config.
+        InternalSetSchemaResponse internalSetSchemaResponse1 =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* schemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse1.isSuccess()).isTrue();
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Set the same schema again with different visibility settings. Need persistToDisk.
+        InternalSetSchemaResponse internalSetSchemaResponse2 =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        Collections.singletonList(visibilityConfig),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* schemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse2.isSuccess()).isTrue();
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+    }
+
+    @Test
+    public void testGetAndResetNeedPersistToDisk_returnsTrueAfterPut() throws Exception {
+        // Set schema
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_NONE)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_NONE)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Put a document. Need persistToDisk.
+        GenericDocument document =
+                new GenericDocument.Builder<>("namespace", "id", "Type")
+                        .setPropertyString("body", "foo bar baz")
+                        .build();
+        mAppSearchImpl.putDocument(
+                "package",
+                "database",
+                document,
+                /* sendChangeNotifications= */ false,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+    }
+
+    @Test
+    public void testGetAndResetNeedPersistToDisk_returnsTrueAfterRemove() throws Exception {
+        // Set schema
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_NONE)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_NONE)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Put a document. Need persistToDisk.
+        GenericDocument document =
+                new GenericDocument.Builder<>("namespace", "id", "Type")
+                        .setPropertyString("body", "foo bar baz")
+                        .build();
+        mAppSearchImpl.putDocument(
+                "package",
+                "database",
+                document,
+                /* sendChangeNotifications= */ false,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Remove a document. Need persistToDisk.
+        mAppSearchImpl.remove(
+                "package",
+                "database",
+                "namespace",
+                "id",
+                /* removeStatsBuilder= */ null,
+                /* callStatsBuilder= */ null);
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+    }
+
+    @Test
+    public void testGetAndResetNeedPersistToDisk_returnsTrueAfterRemoveByQuery() throws Exception {
+        // Set schema
+        List<AppSearchSchema> schemas =
+                Collections.singletonList(
+                        new AppSearchSchema.Builder("Type")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder("body")
+                                                .setCardinality(
+                                                        AppSearchSchema.PropertyConfig
+                                                                .CARDINALITY_OPTIONAL)
+                                                .setIndexingType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .INDEXING_TYPE_PREFIXES)
+                                                .setTokenizerType(
+                                                        AppSearchSchema.StringPropertyConfig
+                                                                .TOKENIZER_TYPE_PLAIN)
+                                                .build())
+                                .build());
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mAppSearchImpl.setSchema(
+                        "package",
+                        "database",
+                        schemas,
+                        /* visibilityConfigs= */ Collections.emptyList(),
+                        /* forceOverride= */ false,
+                        /* version= */ 0,
+                        /* setSchemaStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Put a document. Need persistToDisk.
+        GenericDocument document =
+                new GenericDocument.Builder<>("namespace", "id", "Type")
+                        .setPropertyString("body", "foo bar baz")
+                        .build();
+        mAppSearchImpl.putDocument(
+                "package",
+                "database",
+                document,
+                /* sendChangeNotifications= */ false,
+                /* logger= */ null,
+                /* callStatsBuilder= */ null);
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Remove by query. Need persistToDisk.
+        mAppSearchImpl.removeByQuery(
+                "package",
+                "database",
+                /* queryExpression= */ "foo",
+                new SearchSpec.Builder()
+                        .addFilterNamespaces("namespace")
+                        .setTermMatch(SearchSpec.TERM_MATCH_PREFIX)
+                        .build(),
+                /* deletedIds= */ null,
+                /* statsBuilder= */ null,
+                /* callStatsBuilder= */ null);
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_BLOB_STORE)
+    public void testGetAndResetNeedPersistToDisk_returnsTrueAfterOpenWriteAndCommitBlob()
+            throws Exception {
+        mAppSearchImpl =
+                AppSearchImpl.create(
+                        mAppSearchDir,
+                        new AppSearchConfigImpl(
+                                new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
+                        /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
+                        /* visibilityChecker= */ null,
+                        new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
+                        /* icingSearchEngine= */ null,
+                        ALWAYS_OPTIMIZE);
+        byte[] data = generateRandomBytes(20 * 1024); // 20 KiB
+        byte[] digest = calculateDigest(data);
+        AppSearchBlobHandle handle =
+                AppSearchBlobHandle.createWithSha256(digest, "package", "db1", "ns");
+        try (ParcelFileDescriptor writePfd =
+                        mAppSearchImpl.openWriteBlob(
+                                "package", "db1", handle, /* callStatsBuilder= */ null);
+                OutputStream outputStream =
+                        new ParcelFileDescriptor.AutoCloseOutputStream(writePfd)) {
+            outputStream.write(data);
+            outputStream.flush();
+        }
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+
+        // Sanity check that the flag is reset.
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isFalse();
+
+        // Commit blob. Need persistToDisk.
+        mAppSearchImpl.commitBlob("package", "db1", handle, /* callStatsBuilder= */ null);
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_BLOB_STORE)
+    public void testGetAndResetNeedPersistToDisk_returnsTrueAfterSetBlobVisibility()
+            throws Exception {
+        mAppSearchImpl =
+                AppSearchImpl.create(
+                        mAppSearchDir,
+                        new AppSearchConfigImpl(
+                                new UnlimitedLimitConfig(), new LocalStorageIcingOptionsConfig()),
+                        /* initStatsBuilder= */ null,
+                        /* callStatsBuilder= */ null,
+                        /* visibilityChecker= */ null,
+                        new JetpackRevocableFileDescriptorStore(mUnlimitedConfig),
+                        /* icingSearchEngine= */ null,
+                        ALWAYS_OPTIMIZE);
+
+        SchemaVisibilityConfig visibleToConfig =
+                new SchemaVisibilityConfig.Builder()
+                        .addAllowedPackage(new PackageIdentifier("pkgBar", new byte[32]))
+                        .addRequiredPermissions(ImmutableSet.of(1, 2))
+                        .setPubliclyVisibleTargetPackage(
+                                new PackageIdentifier("pkgFoo", new byte[32]))
+                        .build();
+        InternalVisibilityConfig config =
+                new InternalVisibilityConfig.Builder("namespace")
+                        .setNotDisplayedBySystem(false)
+                        .addVisibleToConfig(visibleToConfig)
+                        .build();
+
+        mAppSearchImpl.setBlobNamespaceVisibility(
+                "package", "db1", ImmutableList.of(config), /* callStatsBuilder= */ null);
+        assertThat(mAppSearchImpl.getAndResetNeedPersistToDisk()).isTrue();
     }
 
     private SchemaProto getSchemaProtoWithDatabase(SchemaProto schema) throws AppSearchException {

@@ -26,6 +26,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Binder;
+import android.os.Build;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
@@ -71,6 +72,8 @@ public class IsolatedStorageService extends Service {
     private static final String PAYLOAD_BINARY_NAME = "libicing_anywhere.so";
 
     private static final String SYSTEM_PROPERTY_ENABLE_DEBUG_BUILD = "ro.debuggable";
+    private static final String SYSTEM_PROPERTY_ENABLE_NONPROTECTED_APPSEARCH_VM =
+            "ro.enable.nonprotected_appsearch_vm";
     private static final boolean IS_DEBUG_BUILD =
             SystemProperties.getInt(SYSTEM_PROPERTY_ENABLE_DEBUG_BUILD, /* def= */ 0) == 1;
 
@@ -168,8 +171,10 @@ public class IsolatedStorageService extends Service {
     @GuardedBy("mLock")
     private void restartVmLocked(ServiceConfig serviceConfig, boolean forceRestart)
             throws VirtualMachineException, NullPointerException {
+        Context context = createDeviceProtectedStorageContext();
+        VirtualMachineConfig config = getVmConfig(context, serviceConfig);
         if (mVm == null) {
-            mVm = maybeCreateVm(serviceConfig);
+            mVm = maybeCreateVm(context, config);
             if (mVm == null) {
                 throw new NullPointerException("VM instance is null");
             }
@@ -200,6 +205,7 @@ public class IsolatedStorageService extends Service {
         IsolateStorageServiceLogger logger = new IsolateStorageServiceLogger(serviceConfig);
         VmCallback vmCallback = new VmCallback(mPayloadReadyFuture, logger);
         mVm.setCallback(mExecutorService, vmCallback);
+        mVm.setConfig(config);
         mVm.run();
     }
 
@@ -209,49 +215,35 @@ public class IsolatedStorageService extends Service {
      * <p>If the VM already exists, return it. If the VM doesn't exist or is deleted, create a new
      * VM and return it. Return {@code null} if failed to get or create the VM.
      */
-    private @Nullable VirtualMachine maybeCreateVm(ServiceConfig serviceConfig) {
-        Context context = createDeviceProtectedStorageContext();
+    private @Nullable VirtualMachine maybeCreateVm(Context context, VirtualMachineConfig config) {
         VirtualMachineManager vmm = context.getSystemService(VirtualMachineManager.class);
         if (vmm == null) {
             Log.e(TAG, "Unable to get VirtualMachineManager");
             return null;
         }
-
         try {
-            final int vmDebugLevel =
-                    IS_DEBUG_BUILD
-                            ? VirtualMachineConfig.DEBUG_LEVEL_FULL
-                            : VirtualMachineConfig.DEBUG_LEVEL_NONE;
-            // TODO(b/406258175): enable delayed encrypted store setup to allow icing data to be
-            //  protected by CE
-            VirtualMachineConfig config =
-                    new VirtualMachineConfig.Builder(context)
-                            .setPayloadBinaryName(PAYLOAD_BINARY_NAME)
-                            .setProtectedVm(true)
-                            .setDebugLevel(vmDebugLevel)
-                            // Set the maximum size of the VM encrypted storage. Storage is
-                            // allocated on an as needed basis.
-                            .setEncryptedStorageBytes(DEFAULT_ENCRYPTED_STORAGE_BYTES)
-                            .setMemoryBytes(serviceConfig.pVmMemoryBytes)
-                            .setCpuTopology(VirtualMachineConfig.CPU_TOPOLOGY_ONE_CPU)
-                            .setShouldUseHugepages(true)
-                            .build();
-            try {
-                VirtualMachine vm = vmm.getOrCreate(VM_NAME, config);
-                VirtualMachineConfig actualConfig = vm.getConfig();
-                if (!config.isCompatibleWith(actualConfig)) {
-                    Log.w(
-                            TAG,
-                            "expected config is not compatible with the running config. Recreating"
-                                    + " VM");
-                    deleteVm(vmm, VM_NAME);
-                    return vmm.getOrCreate(VM_NAME, config);
-                }
-                return vm;
-            } catch (VirtualMachineException e) {
-                Log.e(TAG, "Failed to get or create virtual machine " + VM_NAME, e);
-                return null;
+            VirtualMachine vm = vmm.getOrCreate(VM_NAME, config);
+            VirtualMachineConfig actualConfig = vm.getConfig();
+            if (!config.isCompatibleWith(actualConfig)) {
+                Log.w(
+                        TAG,
+                        "expected config is not compatible with the running config. Recreating"
+                                + " VM");
+                deleteVmByName(vmm, VM_NAME);
+                return vmm.getOrCreate(VM_NAME, config);
             }
+            return vm;
+        } catch (VirtualMachineException e) {
+            // TODO(b/437160991): remove once VirtualMachineManager.getOrCreate is properly
+            //  handling creation failures.
+            if (e.getMessage().contains("Failed to read VM config from file")
+                    || e.getMessage().contains("Persisted VM config is invalid")) {
+                Log.wtf(TAG, "Deleting the vm to recover from vm config failures", e);
+                deleteVmByName(vmm, VM_NAME);
+            } else {
+                Log.wtf(TAG, "Failed to get or create virtual machine " + VM_NAME, e);
+            }
+            return null;
         } catch (IllegalArgumentException
                 | IllegalStateException
                 | UnsupportedOperationException e) {
@@ -260,16 +252,40 @@ public class IsolatedStorageService extends Service {
         }
     }
 
+    private static @NonNull VirtualMachineConfig getVmConfig(
+            Context context, ServiceConfig serviceConfig) {
+        final int vmDebugLevel =
+                IS_DEBUG_BUILD
+                        ? VirtualMachineConfig.DEBUG_LEVEL_FULL
+                        : VirtualMachineConfig.DEBUG_LEVEL_NONE;
+        // Detect if cuttlefish. pKVM is not currently supported on CF, so launch in non-protected
+        // mode
+        final boolean protectedAppSearchVmEnabled =
+                !SystemProperties.getBoolean(
+                        SYSTEM_PROPERTY_ENABLE_NONPROTECTED_APPSEARCH_VM, /* def= */ false);
+        Log.i(
+                TAG,
+                "Creating VM config with: MODEL="
+                        + Build.MODEL
+                        + ", protected VM="
+                        + protectedAppSearchVmEnabled);
+        return new VirtualMachineConfig.Builder(context)
+                .setPayloadBinaryName(PAYLOAD_BINARY_NAME)
+                .setProtectedVm(protectedAppSearchVmEnabled)
+                .setDebugLevel(vmDebugLevel)
+                // Set the maximum size of the VM encrypted storage. Storage is
+                // allocated on an as needed basis.
+                .setEncryptedStorageBytes(DEFAULT_ENCRYPTED_STORAGE_BYTES)
+                .setMemoryBytes(serviceConfig.pVmMemoryBytes)
+                .setCpuTopology(VirtualMachineConfig.CPU_TOPOLOGY_ONE_CPU)
+                .setShouldUseHugepages(true)
+                .build();
+    }
+
     @GuardedBy("mLock")
     private void deleteCurrentVmLocked(@Nullable String vmErrorMessage) {
         Log.i(TAG, "Deleting current VM...");
-        Context context = createDeviceProtectedStorageContext();
-        VirtualMachineManager vmm = context.getSystemService(VirtualMachineManager.class);
-        if (vmm == null) {
-            Log.e(TAG, "Unable to get VirtualMachineManager");
-            return;
-        }
-        if (deleteVm(vmm, VM_NAME)) {
+        if (deleteVmByName(VM_NAME)) {
             if (vmErrorMessage != null) {
                 Log.wtf(TAG, vmErrorMessage);
             } else {
@@ -282,17 +298,44 @@ public class IsolatedStorageService extends Service {
         }
     }
 
+    private boolean deleteCurrentVmIfExists() throws NullPointerException, VirtualMachineException {
+        Context context = createDeviceProtectedStorageContext();
+        VirtualMachineManager vmm = context.getSystemService(VirtualMachineManager.class);
+        if (vmm == null) {
+            Log.e(TAG, "Unable to get VirtualMachineManager");
+            throw new NullPointerException("Unable to get VirtualMachineManager");
+        }
+        if (vmm.get(VM_NAME) == null) {
+            Log.i(TAG, "VM " + VM_NAME + " doesn't exist");
+            return true;
+        }
+        return deleteVmByName(vmm, VM_NAME);
+    }
+
+    /** Delete old CE VMs. */
     private void deleteOldVms() {
         VirtualMachineManager vmm = getSystemService(VirtualMachineManager.class);
         if (vmm == null) {
             Log.e(TAG, "Unable to get VirtualMachineManager");
             return;
         }
-        deleteVm(vmm, "isolated_storage_service_vm");
-        deleteVm(vmm, "isolated_storage_service2_vm");
+        deleteVmByName(vmm, "isolated_storage_service_vm");
+        deleteVmByName(vmm, "isolated_storage_service2_vm");
     }
 
-    private boolean deleteVm(VirtualMachineManager vmm, String name) {
+    /** Deletes DE VM by name. */
+    private boolean deleteVmByName(String name) {
+        Context context = createDeviceProtectedStorageContext();
+        VirtualMachineManager vmm = context.getSystemService(VirtualMachineManager.class);
+        if (vmm == null) {
+            Log.e(TAG, "Unable to get VirtualMachineManager");
+            return false;
+        }
+        return deleteVmByName(vmm, name);
+    }
+
+    /** Deletes VM by name. */
+    private boolean deleteVmByName(VirtualMachineManager vmm, String name) {
         try {
             vmm.delete(name);
         } catch (VirtualMachineException e) {
@@ -522,6 +565,15 @@ public class IsolatedStorageService extends Service {
                 throw new RemoteException(e.getMessage());
             }
             return VM_START_STATUS_SUCCESS;
+        }
+
+        @Override
+        public boolean deleteVm() throws RemoteException {
+            try {
+                return deleteCurrentVmIfExists();
+            } catch (Exception e) {
+                throw new RemoteException(e.getMessage());
+            }
         }
 
         @Override

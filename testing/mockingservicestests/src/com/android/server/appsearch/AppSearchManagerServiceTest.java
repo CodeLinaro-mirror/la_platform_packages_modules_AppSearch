@@ -44,6 +44,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import android.Manifest;
@@ -159,6 +160,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 
 public class AppSearchManagerServiceTest {
     private static final String DATABASE_NAME = "databaseName";
@@ -199,8 +201,10 @@ public class AppSearchManagerServiceTest {
         Context context = ApplicationProvider.getApplicationContext();
         mUserHandle = context.getUser();
         mUiAutomation = InstrumentationRegistry.getInstrumentation().getUiAutomation();
-        final boolean useIsolatedStorage = false;
-        mContext = new TestContext(context, mRoleManager, mDevicePolicyManager, useIsolatedStorage);
+        final boolean isIsolatedStorageAvailable = false;
+        mContext =
+                new TestContext(
+                        context, mRoleManager, mDevicePolicyManager, isIsolatedStorageAvailable);
 
         // Set a test environment that provides a temporary folder for AppSearch
         File mAppSearchDir = mTemporaryFolder.newFolder();
@@ -225,7 +229,8 @@ public class AppSearchManagerServiceTest {
         // Note, SimpleTestLogger does not suffice for our tests since CallStats logging in
         // AppSearchManagerService occurs in a separate thread. With a spy, we can verify with a
         // timeout to catch asynchronous calls.
-        mExecutorManager = new ExecutorManager(appSearchConfig);
+        mExecutorManager =
+                new ExecutorManager(appSearchConfig, /* isIsolatedStorageAvailable= */ true);
         mUserInstance =
                 AppSearchUserInstanceManager.getInstance()
                         .getOrCreateUserInstance(
@@ -416,7 +421,8 @@ public class AppSearchManagerServiceTest {
                                 /* visibilityDocuments= */ Collections.emptyList(),
                                 /* forceOverride= */ false,
                                 /* version= */ 0,
-                                /* setSchemaStatsBuilder= */ null);
+                                /* setSchemaStatsBuilder= */ null,
+                                /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
 
         // Prepare search action and click action generic documents.
@@ -813,6 +819,7 @@ public class AppSearchManagerServiceTest {
                 mContext.getPackageName(), DATABASE_NAME, CallStats.CALL_TYPE_GET_STORAGE_INFO, callReceivedTimestampMillis);
     }
 
+    @RequiresFlagsDisabled(Flags.FLAG_ENABLE_NO_OP_MANUAL_PERSIST)
     @Test
     public void testPersistToDiskStatsLogging() throws Exception {
         final long callReceivedTimestampMillis = System.currentTimeMillis();
@@ -1514,7 +1521,8 @@ public class AppSearchManagerServiceTest {
                 KEY_ISOLATED_STORAGE_DISABLED,
                 Boolean.toString(false),
                 false);
-        assumeTrue(IsolatedStorageServiceManager.useIsolatedStorage(context, appSearchConfig));
+        assumeTrue(
+                IsolatedStorageServiceManager.isIsolatedStorageAvailable(context, appSearchConfig));
         // The original user0 was created to not use isolated storage, and that result was
         // cached. Clear the cache so that our new settings take effect.
         AppSearchUserInstanceManager.getInstance()
@@ -1526,19 +1534,145 @@ public class AppSearchManagerServiceTest {
                         ExecutorManager.createDefaultScheduledExecutorService());
         // Ensure that AppSearch fails if the isolated storage service fails
         TestContext testContext =
-                new TestContext(context, mRoleManager, mDevicePolicyManager,
-                        /*useIsolatedStorage=*/true);
+                new TestContext(
+                        context,
+                        mRoleManager,
+                        mDevicePolicyManager,
+                        /* isIsolatedStorageAvailable= */ true);
         assertThrows(
                 AppSearchException.class,
-                () -> {
-                    AppSearchUserInstanceManager.getInstance()
-                            .getOrCreateUserInstance(
-                                    testContext,
-                                    mUserHandle,
-                                    appSearchConfig,
-                                    mExecutorManager,
-                                    isolatedStorageServiceManager);
-                });
+                () ->
+                        AppSearchUserInstanceManager.getInstance()
+                                .getOrCreateUserInstance(
+                                        testContext,
+                                        mUserHandle,
+                                        appSearchConfig,
+                                        mExecutorManager,
+                                        isolatedStorageServiceManager));
+    }
+
+    @Test
+    public void testPutDocuments_usesWriteExecutor() throws Exception {
+        // Set up executor spies
+        ExecutorManager executorManager = mAppSearchManagerService.getExecutorManager();
+        ExecutorService writeExecutorSpy =
+                spy(
+                        (ExecutorService)
+                                executorManager.getOrCreateUserExecutor(
+                                        mUserHandle, /* isReadOnly= */ false));
+        ExecutorService readExecutorSpy =
+                spy(
+                        (ExecutorService)
+                                executorManager.getOrCreateUserExecutor(
+                                        mUserHandle, /* isReadOnly= */ true));
+        executorManager.setUserExecutorForTest(mUserHandle, writeExecutorSpy);
+        executorManager.setReadOnlyUserExecutorForTest(mUserHandle, readExecutorSpy);
+
+        TestBatchResultErrorCallback callback = new TestBatchResultErrorCallback();
+        mAppSearchManagerServiceStub.putDocuments(
+                new PutDocumentsAidlRequest(
+                        AppSearchAttributionSource.createAttributionSource(mContext,
+                                mCallingPid), DATABASE_NAME,
+                        new DocumentsParcel(Collections.emptyList(), Collections.emptyList()),
+                        mUserHandle, BINDER_CALL_START_TIME), callback);
+
+        // Verify write executor was used
+        verify(writeExecutorSpy, times(1)).execute(any());
+        verify(readExecutorSpy, never()).execute(any());
+    }
+
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_SEPARATE_READ_WRITE_EXECUTORS)
+    @Test
+    public void testSearch_usesReadOnlyExecutor() throws Exception {
+        // Set up executor spies
+        ExecutorManager executorManager = mAppSearchManagerService.getExecutorManager();
+        ExecutorService writeExecutorSpy =
+                spy(
+                        (ExecutorService)
+                                executorManager.getOrCreateUserExecutor(
+                                        mUserHandle, /* isReadOnly= */ false));
+        ExecutorService readExecutorSpy =
+                spy(
+                        (ExecutorService)
+                                executorManager.getOrCreateUserExecutor(
+                                        mUserHandle, /* isReadOnly= */ true));
+        executorManager.setUserExecutorForTest(mUserHandle, writeExecutorSpy);
+        executorManager.setReadOnlyUserExecutorForTest(mUserHandle, readExecutorSpy);
+
+        TestResultCallback callback = new TestResultCallback();
+        mAppSearchManagerServiceStub.search(
+                new SearchAidlRequest(AppSearchAttributionSource.createAttributionSource(mContext,
+                        mCallingPid),
+                        DATABASE_NAME, /* searchExpression= */ "", EMPTY_SEARCH_SPEC, mUserHandle,
+                        BINDER_CALL_START_TIME), callback);
+
+        // Verify read executor was used
+        verify(writeExecutorSpy, never()).execute(any());
+        verify(readExecutorSpy, times(1)).execute(any());
+    }
+
+    @Test
+    public void testSetSchema_usesWriteExecutor() throws Exception {
+        // Set up executor spies
+        ExecutorManager executorManager = mAppSearchManagerService.getExecutorManager();
+        ExecutorService writeExecutorSpy =
+                spy(
+                        (ExecutorService)
+                                executorManager.getOrCreateUserExecutor(
+                                        mUserHandle, /* isReadOnly= */ false));
+        ExecutorService readExecutorSpy =
+                spy(
+                        (ExecutorService)
+                                executorManager.getOrCreateUserExecutor(
+                                        mUserHandle, /* isReadOnly= */ true));
+        executorManager.setUserExecutorForTest(mUserHandle, writeExecutorSpy);
+        executorManager.setReadOnlyUserExecutorForTest(mUserHandle, readExecutorSpy);
+
+        TestResultCallback callback = new TestResultCallback();
+        mAppSearchManagerServiceStub.setSchema(
+                new SetSchemaAidlRequest(
+                        AppSearchAttributionSource.createAttributionSource(mContext, mCallingPid),
+                        DATABASE_NAME,
+                        /* schemaBundles= */ Collections.emptyList(),
+                        /* visibilityBundles= */ Collections.emptyList(),
+                        /* forceOverride= */ false, /* schemaVersion= */ 0, mUserHandle,
+                        BINDER_CALL_START_TIME, SchemaMigrationStats.FIRST_CALL_GET_INCOMPATIBLE),
+                callback);
+
+        // Verify write executor was used
+        verify(writeExecutorSpy, times(1)).execute(any());
+        verify(readExecutorSpy, never()).execute(any());
+    }
+
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_SEPARATE_READ_WRITE_EXECUTORS)
+    @Test
+    public void testGetSchema_usesReadOnlyExecutor() throws Exception {
+        // Set up executor spies
+        ExecutorManager executorManager = mAppSearchManagerService.getExecutorManager();
+        ExecutorService writeExecutorSpy =
+                spy(
+                        (ExecutorService)
+                                executorManager.getOrCreateUserExecutor(
+                                        mUserHandle, /* isReadOnly= */ false));
+        ExecutorService readExecutorSpy =
+                spy(
+                        (ExecutorService)
+                                executorManager.getOrCreateUserExecutor(
+                                        mUserHandle, /* isReadOnly= */ true));
+        executorManager.setUserExecutorForTest(mUserHandle, writeExecutorSpy);
+        executorManager.setReadOnlyUserExecutorForTest(mUserHandle, readExecutorSpy);
+
+        TestResultCallback callback = new TestResultCallback();
+        mAppSearchManagerServiceStub.getSchema(
+                new GetSchemaAidlRequest(
+                        AppSearchAttributionSource.createAttributionSource(mContext, mCallingPid),
+                        mContext.getPackageName(), DATABASE_NAME, mUserHandle,
+                        BINDER_CALL_START_TIME, /* isForEnterprise= */ false),
+                callback);
+
+        // Verify read executor was used
+        verify(writeExecutorSpy, never()).execute(any());
+        verify(readExecutorSpy, times(1)).execute(any());
     }
 
     private void verifyLocalCallsResults(int resultCode) throws Exception {
@@ -1842,12 +1976,14 @@ public class AppSearchManagerServiceTest {
     }
 
     private void verifyPersistToDiskResult(int resultCode) throws Exception {
-        mAppSearchManagerServiceStub.persistToDisk(
-                new PersistToDiskAidlRequest(
-                        AppSearchAttributionSource.createAttributionSource(mContext,
-                                mCallingPid), mUserHandle,
-                        BINDER_CALL_START_TIME));
-        verifyCallResult(resultCode, CallStats.CALL_TYPE_FLUSH, /* result= */ null);
+        if (!Flags.enableNoOpManualPersist()) {
+            mAppSearchManagerServiceStub.persistToDisk(
+                    new PersistToDiskAidlRequest(
+                            AppSearchAttributionSource.createAttributionSource(mContext,
+                                    mCallingPid), mUserHandle,
+                            BINDER_CALL_START_TIME));
+            verifyCallResult(resultCode, CallStats.CALL_TYPE_FLUSH, /* result= */ null);
+        }
     }
 
     private void verifyRegisterObserverCallbackResult(int resultCode) throws Exception {
@@ -1935,11 +2071,17 @@ public class AppSearchManagerServiceTest {
         List<AppSearchSchema> schemas = Collections.singletonList(
                 new AppSearchSchema.Builder("type").build());
         InternalSetSchemaResponse internalSetSchemaResponse =
-                mUserInstance.getAppSearchImpl().setSchema(packageName, databaseName, schemas,
-                        /* visibilityDocuments= */ Collections.emptyList(),
-                        /* forceOverride= */ false,
-                        /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                mUserInstance
+                        .getAppSearchImpl()
+                        .setSchema(
+                                packageName,
+                                databaseName,
+                                schemas,
+                                /* visibilityDocuments= */ Collections.emptyList(),
+                                /* forceOverride= */ false,
+                                /* version= */ 0,
+                                /* setSchemaStatsBuilder= */ null,
+                                /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
     }
 
@@ -1947,19 +2089,30 @@ public class AppSearchManagerServiceTest {
             String id) throws Exception {
         // Insert a document
         GenericDocument document = new GenericDocument.Builder<>(namespace, id, "type").build();
-        mUserInstance.getAppSearchImpl().putDocument(packageName, databaseName, document,
-                /* sendChangeNotifications= */ false,
-                /* logger= */ null);
+        mUserInstance
+                .getAppSearchImpl()
+                .putDocument(
+                        packageName,
+                        databaseName,
+                        document,
+                        /* sendChangeNotifications= */ false,
+                        /* logger= */ null,
+                        /* callStatsBuilder= */ null);
     }
 
     private void removeTestSchema(String packageName, String databaseName) throws Exception {
         InternalSetSchemaResponse internalSetSchemaResponse =
-                mUserInstance.getAppSearchImpl().setSchema(packageName, databaseName,
-                        /* schemas= */ Collections.emptyList(),
-                        /* visibilityDocuments= */ Collections.emptyList(),
-                        /* forceOverride= */ true,
-                        /* version= */ 0,
-                        /* setSchemaStatsBuilder= */ null);
+                mUserInstance
+                        .getAppSearchImpl()
+                        .setSchema(
+                                packageName,
+                                databaseName,
+                                /* schemas= */ Collections.emptyList(),
+                                /* visibilityDocuments= */ Collections.emptyList(),
+                                /* forceOverride= */ true,
+                                /* version= */ 0,
+                                /* setSchemaStatsBuilder= */ null,
+                                /* callStatsBuilder= */ null);
         assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
     }
 
@@ -1992,7 +2145,7 @@ public class AppSearchManagerServiceTest {
     private static final class TestContext extends ContextWrapper {
         private final RoleManager mRoleManager;
         private final DevicePolicyManager mDevicePolicyManager;
-        private final boolean mUseIsolatedStorage;
+        private final boolean isIsolatedStorageAvailable;
 
         @Nullable private PackageManager mPackageManager;
         @Nullable private String mPackageName;
@@ -2001,11 +2154,11 @@ public class AppSearchManagerServiceTest {
                 Context base,
                 RoleManager roleManager,
                 DevicePolicyManager devicePolicyManager,
-                boolean useIsolatedStorage) {
+                boolean isIsolatedStorageAvailable) {
             super(base);
             mRoleManager = roleManager;
             mDevicePolicyManager = devicePolicyManager;
-            mUseIsolatedStorage = useIsolatedStorage;
+            this.isIsolatedStorageAvailable = isIsolatedStorageAvailable;
         }
 
         @Override
@@ -2058,7 +2211,7 @@ public class AppSearchManagerServiceTest {
              * Force use of native icing for AppSearchManagerServiceTests, which mocks
              * servives and does have the isolated storage service
              */
-            if (Context.VIRTUALIZATION_SERVICE.equals(name) && !mUseIsolatedStorage) {
+            if (Context.VIRTUALIZATION_SERVICE.equals(name) && !isIsolatedStorageAvailable) {
                 return null;
             }
             return super.getSystemService(name);

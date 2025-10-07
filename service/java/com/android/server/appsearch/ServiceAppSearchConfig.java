@@ -54,6 +54,12 @@ public interface ServiceAppSearchConfig extends AppSearchConfig, AutoCloseable {
      */
     int DEFAULT_SAMPLING_INTERVAL = 10;
 
+    /**
+     * Sampling interval to use for trunkfood users. This will sample 25% of logs rather than the
+     * production default of 10%.
+     */
+    int TRUNKFOODER_SAMPLING_INTERVAL = 4;
+
     int DEFAULT_LIMIT_CONFIG_MAX_DOCUMENT_SIZE_BYTES = 512 * 1024; // 512KiB
     int DEFAULT_LIMIT_CONFIG_PER_PACKAGE_DOCUMENT_COUNT_LIMIT = 80_000;
     int DEFAULT_LIMIT_CONFIG_DOCUMENT_COUNT_LIMIT_START_THRESHOLD = 2_000_000;
@@ -64,7 +70,8 @@ public interface ServiceAppSearchConfig extends AppSearchConfig, AutoCloseable {
     int DEFAULT_MIN_TIME_OPTIMIZE_THRESHOLD_MILLIS = 0;
     int DEFAULT_FOUR_HOUR_MIN_TIME_OPTIMIZE_THRESHOLD_MILLIS = (int) TimeUnit.HOURS.toMillis(4);
     // Cached API Call Stats is disabled by default
-    int DEFAULT_API_CALL_STATS_LIMIT = 0;
+    int DEFAULT_DISABLED_API_CALL_STATS_LIMIT = 0;
+    int DEFAULT_ENABLED_API_CALL_STATS_LIMIT = 50;
     boolean DEFAULT_RATE_LIMIT_ENABLED = false;
 
     /** This defines the task queue's total capacity for rate limiting. */
@@ -110,7 +117,7 @@ public interface ServiceAppSearchConfig extends AppSearchConfig, AutoCloseable {
     int DEFAULT_MAX_OPEN_BLOB_COUNT = 250;
 
     /** The default number of max byte size limit for a single batch put request. */
-    int DEFAULT_MAX_BYTE_LIMIT_FOR_BATCH_PUT = 64 * 1024; // 64 KiB
+    int DEFAULT_MAX_BYTE_LIMIT_FOR_BATCH_PUT = 512 * 1024; // 512 KiB
 
     /** Returns cached value for minTimeIntervalBetweenSamplesMillis. */
     long getCachedMinTimeIntervalBetweenSamplesMillis();
@@ -197,8 +204,19 @@ public interface ServiceAppSearchConfig extends AppSearchConfig, AutoCloseable {
      */
     int getCachedMinTimeOptimizeThresholdMs();
 
-    /** Returns the maximum number of last API calls' statistics that can be included in dumpsys. */
+    /**
+     * Returns the maximum number of last API calls' statistics that can be included in the tracking
+     * queue.
+     */
     int getCachedApiCallStatsLimit();
+
+    /**
+     * Returns the maximum number of last API calls' statistics that can be included in the tracking
+     * queue when VM is enabled.
+     */
+    default int getCachedApiCallStatsLimitForVm() {
+        return DEFAULT_ENABLED_API_CALL_STATS_LIMIT;
+    }
 
     /** Returns the cached denylist. */
     Denylist getCachedDenylist();
@@ -279,6 +297,20 @@ public interface ServiceAppSearchConfig extends AppSearchConfig, AutoCloseable {
         return Flags.enableFiveMinPersistToDiskDelay()
                 ? DEFAULT_FIVE_MINUTE_PERSIST_DELAY
                 : DEFAULT_PERSIST_DELAY;
+    }
+
+    /** Default number of API call stats appsearch is tracking. */
+    default int defaultApiCallStatsLimit() {
+        return Flags.enableApiCallStatsTracking()
+                ? DEFAULT_ENABLED_API_CALL_STATS_LIMIT
+                : DEFAULT_DISABLED_API_CALL_STATS_LIMIT;
+    }
+
+    /** Default number of API call stats appsearch is tracking. */
+    default int defaultSamplingInterval() {
+        return Flags.enableHigherSamplingForTrunkfooders()
+                ? TRUNKFOODER_SAMPLING_INTERVAL
+                : DEFAULT_SAMPLING_INTERVAL;
     }
 
     /**

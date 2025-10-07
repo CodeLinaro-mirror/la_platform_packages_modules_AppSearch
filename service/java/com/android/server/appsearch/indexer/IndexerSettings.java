@@ -19,6 +19,7 @@ package com.android.server.appsearch.indexer;
 import android.annotation.CurrentTimeMillisLong;
 import android.annotation.NonNull;
 import android.annotation.WorkerThread;
+import android.os.Build;
 import android.os.PersistableBundle;
 import android.util.AtomicFile;
 
@@ -38,6 +39,7 @@ import java.util.Objects;
  * <ul>
  *   <li>getting and setting the timestamp of the last update
  *   <li>loading and persisting settings to/from a file
+ *   <li>getting and setting the emergency counter
  * </ul>
  *
  * <p>This class is NOT thread safe (similar to {@link PersistableBundle} which it wraps).
@@ -47,6 +49,7 @@ public abstract class IndexerSettings {
     public static final String LAST_UPDATE_TIMESTAMP_KEY = "last_update_timestamp_millis";
     public static final String LAST_ATTEMPTED_UPDATE_TIMESTAMP_KEY =
             "last_attempted_update_timestamp_millis";
+    public static final String FORCE_UPDATE_EMERGENCY_COUNTER_KEY = "emergency_counter";
 
     private final File mBaseDir;
     private File mFile;
@@ -81,6 +84,16 @@ public abstract class IndexerSettings {
         writeBundle(mFile, mBundle);
     }
 
+    /** Returns the emergency counter */
+    public int getIndexerForceUpdateEmergencyCounter() {
+        return mBundle.getInt(FORCE_UPDATE_EMERGENCY_COUNTER_KEY);
+    }
+
+    /** Sets the emergency counter value */
+    public void setIndexerForceUpdateEmergencyCounter(int emergencyCounter) {
+        mBundle.putInt(FORCE_UPDATE_EMERGENCY_COUNTER_KEY, emergencyCounter);
+    }
+
     /** Returns the timestamp of when the last update occurred in milliseconds. */
     public @CurrentTimeMillisLong long getLastUpdateTimestampMillis() {
         return mBundle.getLong(LAST_UPDATE_TIMESTAMP_KEY);
@@ -102,6 +115,11 @@ public abstract class IndexerSettings {
     @NonNull
     @WorkerThread
     public static PersistableBundle readBundle(@NonNull File src) throws IOException {
+        // TODO: b/413737868 - Add support for R- devices.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            throw new UnsupportedOperationException("readBundle is not supported below API 30.");
+        }
+
         AtomicFile atomicFile = new AtomicFile(src);
         try (FileInputStream fis = atomicFile.openRead()) {
             return PersistableBundle.readFromStream(fis);
@@ -109,10 +127,14 @@ public abstract class IndexerSettings {
     }
 
     /** Static util method to write a bundle to a file. */
-    @VisibleForTesting
     @WorkerThread
     public static void writeBundle(@NonNull File dest, @NonNull PersistableBundle bundle)
             throws IOException {
+        // TODO: b/413737868 - Add support for R- devices.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            throw new UnsupportedOperationException("writeBundle is not supported below API 30.");
+        }
+
         AtomicFile atomicFile = new AtomicFile(dest);
         FileOutputStream fos = null;
         try {

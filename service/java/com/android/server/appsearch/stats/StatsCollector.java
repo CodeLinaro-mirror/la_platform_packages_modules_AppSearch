@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+// @exportToGMSCore:skipFile()
 package com.android.server.appsearch.stats;
 
 import android.annotation.NonNull;
@@ -122,7 +122,9 @@ public final class StatsCollector implements StatsManager.StatsPullAtomCallback 
                                 .build()
                                 .getEnabledFeatures();
                 StorageInfoProto storageInfoProto =
-                        userInstance.getAppSearchImpl().getRawStorageInfoProto();
+                        userInstance
+                                .getAppSearchImpl()
+                                .getRawStorageInfoProto(/* callStatsBuilder= */ null);
                 data.add(
                         buildStatsEvent(
                                 userHandle.getIdentifier(), storageInfoProto, enabledFeatures));

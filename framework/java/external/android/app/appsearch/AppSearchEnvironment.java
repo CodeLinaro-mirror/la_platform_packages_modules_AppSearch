@@ -18,6 +18,8 @@ package android.app.appsearch;
 
 import android.annotation.IntDef;
 import android.content.Context;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.os.UserHandle;
 
 import org.jspecify.annotations.NonNull;
@@ -88,4 +90,18 @@ public interface AppSearchEnvironment {
     /** Returns the {@code EnvironmentType} for this environment. */
     @EnvironmentType
     int getEnvironment();
+
+    /** Returns a file with the given name under the given parent path. */
+    @NonNull File getFile(@NonNull File fileParentPath, @NonNull String fileName);
+
+    /**
+     * Populates the {@link PackageInfo#signatures} field for P- devices.
+     *
+     * <p>This is a GMSCore-specific fallback used after retrieving packages on P- devices. It
+     * ensures that a certificate history is still available for verification.
+     *
+     * @throws PackageManager.NameNotFoundException If the package is not found.
+     */
+    void populateSignatures(@NonNull Context context, @NonNull PackageInfo packageInfo)
+            throws PackageManager.NameNotFoundException;
 }

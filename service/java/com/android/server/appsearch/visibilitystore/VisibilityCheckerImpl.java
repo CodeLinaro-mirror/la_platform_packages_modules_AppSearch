@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+// @exportToGMSCore:skipFile()
 package com.android.server.appsearch.visibilitystore;
 
 import static android.Manifest.permission.EXECUTE_APP_FUNCTIONS;
@@ -28,6 +29,7 @@ import static android.permission.PermissionManager.PERMISSION_GRANTED;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.appfunctions.AppFunctionManager;
 import android.app.appsearch.InternalVisibilityConfig;
 import android.app.appsearch.PackageIdentifier;
 import android.app.appsearch.SchemaVisibilityConfig;
@@ -36,6 +38,7 @@ import android.app.appsearch.aidl.AppSearchAttributionSource;
 import android.content.AttributionSource;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.UserHandle;
 import android.permission.PermissionManager;
 
@@ -342,13 +345,24 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
                 case SetSchemaRequest.READ_EXTERNAL_STORAGE:
                 case SetSchemaRequest.READ_HOME_APP_SEARCH_DATA:
                 case SetSchemaRequest.READ_ASSISTANT_APP_SEARCH_DATA:
-                case SetSchemaRequest.EXECUTE_APP_FUNCTIONS:
-                case SetSchemaRequest.EXECUTE_APP_FUNCTIONS_TRUSTED:
                 case SetSchemaRequest.PACKAGE_USAGE_STATS:
                     if (!doesCallerHavePermissionForDataDelivery(
                             requiredPermission, callerAttributionSource)) {
                         // The calling package doesn't have this required permission, return false.
                         return false;
+                    }
+                    break;
+                case SetSchemaRequest.EXECUTE_APP_FUNCTIONS:
+                case SetSchemaRequest.EXECUTE_APP_FUNCTIONS_TRUSTED:
+                    if (!doesCallerHavePermissionForDataDelivery(
+                            requiredPermission, callerAttributionSource)) {
+                        // The calling package doesn't have this required permission, return false.
+                        return false;
+                    }
+                    if (Flags.enableAppFunctionAgentAllowlistCheck()) {
+                        if (!isValidAppFunctionAgent(callerAttributionSource.getPackageName())) {
+                            return false;
+                        }
                     }
                     break;
                 case SetSchemaRequest.MANAGED_PROFILE_CONTACTS_ACCESS:
@@ -455,5 +469,29 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
                         .getPackageManager()
                         .checkPermission(READ_GLOBAL_APP_SEARCH_DATA, callerPackageName)
                 == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /**
+     * Checks whether the given package is a valid agent.
+     *
+     * @param callerPackageName Package name of the caller.
+     */
+    @VisibleForTesting
+    public boolean isValidAppFunctionAgent(@NonNull String callerPackageName) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.BAKLAVA) {
+            // The AppFunction feature might still get backported with sidecar. In this case, any
+            // app with EXECUTE_APP_FUNCTIONS permission is a valid agent.
+            return true;
+        }
+        final AppFunctionManager manager = mUserContext.getSystemService(AppFunctionManager.class);
+        if (manager == null || !android.permission.flags.Flags.appFunctionAccessApiEnabled()) {
+            // Running on SDK without AppFunction access service, any app with EXECUTE_APP_FUNCTIONS
+            // permission is a valid agent.
+            return true;
+        }
+
+        Objects.requireNonNull(callerPackageName);
+        final List<String> validAgents = manager.getValidAgents();
+        return validAgents.contains(callerPackageName);
     }
 }

@@ -13,12 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+// @exportToGMSCore:skipFile()
 package android.app.appsearch;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.os.Environment;
 import android.os.UserHandle;
 
@@ -105,5 +107,16 @@ public class FrameworkAppSearchEnvironment implements AppSearchEnvironment {
     @Override
     public int getEnvironment() {
         return FRAMEWORK_ENVIRONMENT;
+    }
+
+    @Override
+    public File getFile(@NonNull File fileParentPath, @NonNull String fileName) {
+        return new File(fileParentPath, fileName);
+    }
+
+    @Override
+    public void populateSignatures(@NonNull Context context, @NonNull PackageInfo packageInfo)
+            throws PackageManager.NameNotFoundException {
+        // no-op for Platform.
     }
 }

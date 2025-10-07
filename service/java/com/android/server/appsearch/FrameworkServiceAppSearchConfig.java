@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+// @exportToGMSCore:skipFile()
 package com.android.server.appsearch;
 
 import static com.android.server.appsearch.isolated_storage_service.IsolatedStorageServiceManager.DEFAULT_MAX_PAGE_BYTES_LIMIT_FOR_ISOLATED_STORAGE;
@@ -334,7 +334,7 @@ public final class FrameworkServiceAppSearchConfig implements ServiceAppSearchCo
     public int getCachedSamplingIntervalDefault() {
         synchronized (mLock) {
             throwIfClosedLocked();
-            return mBundleLocked.getInt(KEY_SAMPLING_INTERVAL_DEFAULT, DEFAULT_SAMPLING_INTERVAL);
+            return mBundleLocked.getInt(KEY_SAMPLING_INTERVAL_DEFAULT, defaultSamplingInterval());
         }
     }
 
@@ -493,7 +493,7 @@ public final class FrameworkServiceAppSearchConfig implements ServiceAppSearchCo
     public int getCachedApiCallStatsLimit() {
         synchronized (mLock) {
             throwIfClosedLocked();
-            return mBundleLocked.getInt(KEY_API_CALL_STATS_LIMIT, DEFAULT_API_CALL_STATS_LIMIT);
+            return mBundleLocked.getInt(KEY_API_CALL_STATS_LIMIT, defaultApiCallStatsLimit());
         }
     }
 
@@ -806,6 +806,15 @@ public final class FrameworkServiceAppSearchConfig implements ServiceAppSearchCo
         }
     }
 
+    @Override
+    public int getCachedApiCallStatsLimitForVm() {
+        synchronized (mLock) {
+            throwIfClosedLocked();
+            return mBundleLocked.getInt(
+                    KEY_API_CALL_STATS_LIMIT, DEFAULT_ENABLED_API_CALL_STATS_LIMIT);
+        }
+    }
+
     private void updateCachedValues(DeviceConfig.@NonNull Properties properties) {
         for (String key : properties.getKeyset()) {
             updateCachedValue(key, properties);
@@ -844,7 +853,7 @@ public final class FrameworkServiceAppSearchConfig implements ServiceAppSearchCo
             case KEY_SAMPLING_INTERVAL_FOR_GLOBAL_SEARCH_STATS:
             case KEY_SAMPLING_INTERVAL_FOR_OPTIMIZE_STATS:
                 synchronized (mLock) {
-                    mBundleLocked.putInt(key, properties.getInt(key, DEFAULT_SAMPLING_INTERVAL));
+                    mBundleLocked.putInt(key, properties.getInt(key, defaultSamplingInterval()));
                 }
                 break;
             case KEY_LIMIT_CONFIG_MAX_DOCUMENT_SIZE_BYTES:
@@ -909,7 +918,8 @@ public final class FrameworkServiceAppSearchConfig implements ServiceAppSearchCo
                 break;
             case KEY_API_CALL_STATS_LIMIT:
                 synchronized (mLock) {
-                    mBundleLocked.putInt(key, properties.getInt(key, DEFAULT_API_CALL_STATS_LIMIT));
+                    mBundleLocked.putInt(
+                            key, properties.getInt(key, defaultApiCallStatsLimit()));
                 }
                 break;
             case KEY_DENYLIST:

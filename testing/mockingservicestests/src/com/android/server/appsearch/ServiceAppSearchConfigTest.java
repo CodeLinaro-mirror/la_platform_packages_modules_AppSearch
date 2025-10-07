@@ -59,9 +59,9 @@ import static com.android.server.appsearch.FrameworkServiceAppSearchConfig.KEY_S
 import static com.android.server.appsearch.FrameworkServiceAppSearchConfig.KEY_SAMPLING_INTERVAL_FOR_SEARCH_STATS;
 import static com.android.server.appsearch.FrameworkServiceAppSearchConfig.KEY_TIME_OPTIMIZE_THRESHOLD_MILLIS;
 import static com.android.server.appsearch.FrameworkServiceAppSearchConfig.KEY_USE_NEW_QUALIFIED_ID_JOIN_INDEX;
-import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_API_CALL_STATS_LIMIT;
 import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_BYTES_OPTIMIZE_THRESHOLD;
 import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_COMPRESSION_THRESHOLD_BYTES;
+import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_DISABLED_API_CALL_STATS_LIMIT;
 import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_DOC_COUNT_OPTIMIZE_THRESHOLD;
 import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_FIVE_MINUTE_PERSIST_DELAY;
 import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_FOUR_HOUR_MIN_TIME_OPTIMIZE_THRESHOLD_MILLIS;
@@ -83,6 +83,7 @@ import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_RATE_L
 import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_RATE_LIMIT_TASK_QUEUE_TOTAL_CAPACITY;
 import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_SAMPLING_INTERVAL;
 import static com.android.server.appsearch.ServiceAppSearchConfig.DEFAULT_TIME_OPTIMIZE_THRESHOLD_MILLIS;
+import static com.android.server.appsearch.ServiceAppSearchConfig.TRUNKFOODER_SAMPLING_INTERVAL;
 import static com.android.server.appsearch.external.localstorage.IcingOptionsConfig.DEFAULT_COMPRESSION_MEM_LEVEL;
 import static com.android.server.appsearch.external.localstorage.IcingOptionsConfig.DEFAULT_ICU_DATA_FILE_ABSOLUTE_PATH;
 import static com.android.server.appsearch.external.localstorage.IcingOptionsConfig.DEFAULT_ORPHAN_BLOB_TIME_TO_LIVE_MS;
@@ -110,8 +111,6 @@ import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.RuleChain;
-
-import java.util.concurrent.TimeUnit;
 
 public class ServiceAppSearchConfigTest {
     @Rule
@@ -168,20 +167,23 @@ public class ServiceAppSearchConfigTest {
 
         assertThat(appSearchConfig.getCachedMinTimeIntervalBetweenSamplesMillis()).isEqualTo(
                 DEFAULT_MIN_TIME_INTERVAL_BETWEEN_SAMPLES_MILLIS);
+        int defaultSamplingInterval =
+                Flags.enableHigherSamplingForTrunkfooders()
+                        ? TRUNKFOODER_SAMPLING_INTERVAL : DEFAULT_SAMPLING_INTERVAL;
         assertThat(appSearchConfig.getCachedSamplingIntervalDefault()).isEqualTo(
-                DEFAULT_SAMPLING_INTERVAL);
+                defaultSamplingInterval);
         assertThat(appSearchConfig.getCachedSamplingIntervalForBatchCallStats()).isEqualTo(
-                DEFAULT_SAMPLING_INTERVAL);
+                defaultSamplingInterval);
         assertThat(appSearchConfig.getCachedSamplingIntervalForPutDocumentStats()).isEqualTo(
-                DEFAULT_SAMPLING_INTERVAL);
+                defaultSamplingInterval);
         assertThat(appSearchConfig.getCachedSamplingIntervalForInitializeStats()).isEqualTo(
-                DEFAULT_SAMPLING_INTERVAL);
+                defaultSamplingInterval);
         assertThat(appSearchConfig.getCachedSamplingIntervalForSearchStats()).isEqualTo(
-                DEFAULT_SAMPLING_INTERVAL);
+                defaultSamplingInterval);
         assertThat(appSearchConfig.getCachedSamplingIntervalForGlobalSearchStats()).isEqualTo(
-                DEFAULT_SAMPLING_INTERVAL);
+                defaultSamplingInterval);
         assertThat(appSearchConfig.getCachedSamplingIntervalForOptimizeStats()).isEqualTo(
-                DEFAULT_SAMPLING_INTERVAL);
+                defaultSamplingInterval);
         assertThat(appSearchConfig.getMaxDocumentSizeBytes()).isEqualTo(
                 DEFAULT_LIMIT_CONFIG_MAX_DOCUMENT_SIZE_BYTES);
         assertThat(appSearchConfig.getPerPackageDocumentCountLimit())
@@ -196,8 +198,8 @@ public class ServiceAppSearchConfigTest {
                 DEFAULT_TIME_OPTIMIZE_THRESHOLD_MILLIS);
         assertThat(appSearchConfig.getCachedDocCountOptimizeThreshold()).isEqualTo(
                 DEFAULT_DOC_COUNT_OPTIMIZE_THRESHOLD);
-        assertThat(appSearchConfig.getCachedApiCallStatsLimit()).isEqualTo(
-                DEFAULT_API_CALL_STATS_LIMIT);
+        assertThat(appSearchConfig.getCachedApiCallStatsLimit())
+                .isEqualTo(DEFAULT_DISABLED_API_CALL_STATS_LIMIT);
         assertThat(appSearchConfig.getCachedDenylist()).isEqualTo(Denylist.EMPTY_INSTANCE);
         assertThat(appSearchConfig.getMaxTokenLength()).isEqualTo(
                 IcingOptionsConfig.DEFAULT_MAX_TOKEN_LENGTH);
@@ -460,8 +462,11 @@ public class ServiceAppSearchConfigTest {
 
         assertThat(appSearchConfig.getCachedSamplingIntervalForPutDocumentStats()).isEqualTo(
                 samplingIntervalPutDocumentStats);
+        int defaultSamplingInterval =
+                Flags.enableHigherSamplingForTrunkfooders()
+                        ? TRUNKFOODER_SAMPLING_INTERVAL : DEFAULT_SAMPLING_INTERVAL;
         assertThat(appSearchConfig.getCachedSamplingIntervalForBatchCallStats()).isEqualTo(
-                DEFAULT_SAMPLING_INTERVAL);
+                defaultSamplingInterval);
     }
 
     // Tests if we fall back to configured default sampling interval if custom value is not set in

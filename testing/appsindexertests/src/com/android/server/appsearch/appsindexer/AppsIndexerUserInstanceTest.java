@@ -18,6 +18,8 @@ package com.android.server.appsearch.appsindexer;
 
 import static com.android.server.appsearch.appsindexer.AppIndexerVersions.APP_INDEXER_VERSION_UNKNOWN;
 import static com.android.server.appsearch.appsindexer.AppIndexerVersions.CURR_APP_INDEXER_VERSION;
+import static com.android.server.appsearch.appsindexer.FrameworkAppsIndexerForceUpdateConfig.KEY_APPS_INDEXER_FORCE_UPDATE_EMERGENCY_COUNTER;
+import static com.android.server.appsearch.appsindexer.FrameworkAppsIndexerForceUpdateConfig.KEY_APPS_INDEXER_FORCE_UPDATE_ENABLED;
 import static com.android.server.appsearch.appsindexer.TestUtils.createFakePackageInfos;
 import static com.android.server.appsearch.appsindexer.TestUtils.createFakeResolveInfos;
 import static com.android.server.appsearch.appsindexer.TestUtils.removeFakePackageDocuments;
@@ -31,12 +33,17 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.appsearch.AppSearchManager;
 import android.app.appsearch.AppSearchSessionShim;
+import android.app.appsearch.SearchResult;
+import android.app.appsearch.SearchResultsShim;
+import android.app.appsearch.SearchSpec;
 import android.app.appsearch.SetSchemaRequest;
 import android.app.appsearch.testutil.AppSearchSessionShimImpl;
 import android.app.appsearch.testutil.AppSearchTestUtils;
@@ -45,16 +52,21 @@ import android.app.job.JobScheduler;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.content.res.Resources;
 import android.os.Build;
 import android.os.PersistableBundle;
 import android.os.UserHandle;
 import android.platform.test.annotations.RequiresFlagsDisabled;
 import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.provider.DeviceConfig;
 
 import androidx.test.core.app.ApplicationProvider;
 
 import com.android.appsearch.flags.Flags;
+import com.android.modules.utils.testing.TestableDeviceConfig;
 import com.android.server.appsearch.appsindexer.appsearchtypes.MobileApplication;
+import com.android.server.appsearch.indexer.IndexerForceUpdateConfig;
 import com.android.server.appsearch.indexer.IndexerSettings;
 
 import com.google.common.collect.ImmutableList;
@@ -66,10 +78,13 @@ import org.junit.Test;
 import org.junit.rules.RuleChain;
 import org.junit.rules.TemporaryFolder;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Mockito;
 
 import java.io.File;
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -88,13 +103,18 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
 
     @Rule public TemporaryFolder mTemporaryFolder = new TemporaryFolder();
 
-    @Rule public final RuleChain mRuleChain = AppSearchTestUtils.createCommonTestRules();
+    @Rule
+    public final RuleChain mRuleChain =
+            AppSearchTestUtils.createCommonTestRules()
+                    .around(new TestableDeviceConfig.TestableDeviceConfigRule());
 
     private ThreadPoolExecutor mSingleThreadedExecutor;
     private File mAppsDir;
     private File mSettingsFile;
     private AppsIndexerUserInstance mInstance;
     private final AppsIndexerConfig mAppsIndexerConfig = new TestAppsIndexerConfig();
+    private final IndexerForceUpdateConfig mIndexerForceUpdateConfig =
+            new TestAppsIndexerForceUpdateConfig();
 
     @Before
     @Override
@@ -117,7 +137,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         mSettingsFile = new File(mAppsDir, AppsIndexerSettings.SETTINGS_FILE_NAME);
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
     }
 
     @After
@@ -149,7 +173,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Pretend there's one package on device
         setupMockPackageManager(
@@ -162,7 +190,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
         // Wait for the task to finish
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
@@ -173,6 +201,95 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
             assertThat(appsTimestampMap).hasSize(1);
             assertThat(appsTimestampMap.keySet()).containsExactly("com.fake.package0");
         }
+    }
+
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_INDEXER_FORCE_UPDATE)
+    @Test
+    public void testForceUpdate_schedulesJob() throws Exception {
+        JobScheduler mockJobScheduler = mock(JobScheduler.class);
+        mTestContext.setJobScheduler(mockJobScheduler);
+        // This semaphore allows us to pause test execution until we're sure the tasks in
+        // AppsIndexerUserInstance are finished.
+        final Semaphore semaphore = new Semaphore(0);
+        mSingleThreadedExecutor =
+                new ThreadPoolExecutor(
+                        /* corePoolSize= */ 1,
+                        /* maximumPoolSize= */ 1,
+                        /* KeepAliveTime= */ 0L,
+                        TimeUnit.MILLISECONDS,
+                        new LinkedBlockingQueue<>()) {
+                    @Override
+                    protected void afterExecute(Runnable r, Throwable t) {
+                        super.afterExecute(r, t);
+                        semaphore.release();
+                    }
+                };
+        IndexerForceUpdateConfig indexerForceUpdateConfig =
+                new FrameworkAppsIndexerForceUpdateConfig();
+        mInstance =
+                AppsIndexerUserInstance.createInstance(
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        indexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
+
+        // Pretend there's one package on device
+        setupMockPackageManager(
+                mMockPackageManager,
+                createFakePackageInfos(1),
+                createFakeResolveInfos(1),
+                /* appFunctionServices= */ ImmutableList.of());
+
+        // Wait for file setup, as file setup uses the same ExecutorService.
+        assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
+                .isTrue();
+
+        verify(mockJobScheduler, never()).schedule(any());
+
+        CountDownLatch latch = new CountDownLatch(1);
+
+        assertThat(mInstance.getSettings().getIndexerForceUpdateEmergencyCounter()).isEqualTo(0);
+
+        mInstance.startAsync(latch::countDown);
+
+        // Modify Settings and Device Configuration values to force an update
+        mInstance.getSettings().setIndexerForceUpdateEmergencyCounter(0);
+
+        DeviceConfig.setProperty(
+                DeviceConfig.NAMESPACE_APPSEARCH,
+                KEY_APPS_INDEXER_FORCE_UPDATE_ENABLED,
+                Boolean.toString(true),
+                false);
+        DeviceConfig.setProperty(
+                DeviceConfig.NAMESPACE_APPSEARCH,
+                KEY_APPS_INDEXER_FORCE_UPDATE_EMERGENCY_COUNTER,
+                Integer.toString(1),
+                false);
+
+        assertThat(latch.await(/* timeout */ 1, TimeUnit.SECONDS)).isTrue();
+
+        // The executor is responsible for releasing semaphore permits. It's invoked repeatedly
+        // during listener configuration: once for updates and twice for every configuration change.
+        assertThat(
+                semaphore.tryAcquire(
+                        /* permits */ 3,
+                        UPDATE_ASYNC_TIMEOUT.toSeconds(),
+                        TimeUnit.SECONDS))
+                .isTrue();
+
+        assertThat(mInstance.getSettings().getIndexerForceUpdateEmergencyCounter()).isEqualTo(1);
+        ArgumentCaptor<JobInfo> jobInfoArgumentCaptor = ArgumentCaptor.forClass(JobInfo.class);
+        verify(mockJobScheduler, times(1)).schedule(jobInfoArgumentCaptor.capture());
+
+        // Assert that force update doesn't schedule a job after persisting to settings
+        Mockito.clearInvocations(mockJobScheduler);
+        DeviceConfig.setProperty(
+                DeviceConfig.NAMESPACE_APPSEARCH,
+                KEY_APPS_INDEXER_FORCE_UPDATE_EMERGENCY_COUNTER,
+                Integer.toString(1),
+                false);
+        verify(mockJobScheduler, never()).schedule(any());
     }
 
     @Test
@@ -204,7 +321,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Pretend there's one package on device
         setupMockPackageManager(
@@ -217,7 +338,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
 
         // Wait for the task to finish
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
@@ -253,7 +374,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Pretend there's one package on device
         setupMockPackageManager(
@@ -266,7 +391,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
 
         // Wait for the task to finish
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
@@ -303,7 +428,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Pretend there's one package on device
         setupMockPackageManager(
@@ -316,7 +445,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
         // Wait for the task to finish
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
@@ -349,7 +478,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Pretend there's one package on device
         setupMockPackageManager(
@@ -362,7 +495,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
 
         // Wait for the task to finish
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
@@ -395,7 +528,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Pretend there's one package on device
         setupMockPackageManager(
@@ -408,7 +545,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
         // Wait for the task to finish
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
@@ -425,7 +562,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
 
         // Request a bunch of updates and check timestamp after each
         while (secondAttemptedUpdateTimestampMillis == firstAttemptedUpdateTimestampMillis) {
-            mInstance.updateAsync(true);
+            mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
             assertTrue(semaphore.tryAcquire(100L, TimeUnit.MILLISECONDS));
             settings.load();
             secondAttemptedUpdateTimestampMillis = settings.getLastAttemptedUpdateTimestampMillis();
@@ -470,7 +607,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Pretend there's one package on device
         setupMockPackageManager(
@@ -483,7 +624,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
         // Wait for the task to finish
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
@@ -532,7 +673,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Pretend there's one package on device
         setupMockPackageManager(
@@ -545,7 +690,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
 
         // Wait for the task to finish
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
@@ -588,7 +733,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Pretend there's one package on device
         setupMockPackageManager(
@@ -601,7 +750,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
 
         // Wait for the task to finish
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
@@ -650,7 +799,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Pretend there's one package on device
         setupMockPackageManager(
@@ -663,7 +816,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
                 .isTrue();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
 
         // Wait for the task to finish
         assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
@@ -679,12 +832,121 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
     }
 
     @Test
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_APPS_INDEXER_LOCALE_CHANGE_FULL_UPDATE)
+    public void testLocaleChange_triggersFullUpdate() throws Exception {
+        final Semaphore semaphore = new Semaphore(0);
+        mSingleThreadedExecutor =
+                new ThreadPoolExecutor(
+                        /* corePoolSize= */ 1,
+                        /* maximumPoolSize= */ 1,
+                        /* KeepAliveTime= */ 0L,
+                        TimeUnit.MILLISECONDS,
+                        new LinkedBlockingQueue<>()) {
+                    @Override
+                    protected void afterExecute(Runnable r, Throwable t) {
+                        super.afterExecute(r, t);
+                        semaphore.release();
+                    }
+                };
+
+        // Set initial locale in settings
+        AppsIndexerSettings settings = new AppsIndexerSettings(mAppsDir);
+        settings.setPreviousLocaleCode("en");
+        settings.persist();
+
+        mInstance =
+                AppsIndexerUserInstance.createInstance(
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
+
+        // Wait for file setup
+        assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
+                .isTrue();
+
+        // Setup package manager with 1 app
+        setupMockPackageManager(
+                mMockPackageManager,
+                createFakePackageInfos(1),
+                createFakeResolveInfos(1),
+                /* appFunctionServices= */ ImmutableList.of());
+
+        // Initial index run
+        mInstance.updateAsync(/* firstRun= */ false, /* isForceUpdateTriggered= */ false);
+        assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
+                .isTrue();
+
+        AppSearchManager.SearchContext searchContext =
+                new AppSearchManager.SearchContext.Builder(AppSearchHelper.APP_DATABASE).build();
+        AppSearchSessionShim db =
+                AppSearchSessionShimImpl.createSearchSessionAsync(searchContext).get();
+
+        SearchResultsShim sr = db.search("", new SearchSpec.Builder().build());
+        List<SearchResult> results = sr.getNextPageAsync().get();
+        assertThat(results.size()).isEqualTo(1);
+
+        String originalDisplayName =
+                results.get(0)
+                        .getGenericDocument()
+                        .getPropertyString(MobileApplication.APP_PROPERTY_ALTERNATE_NAMES);
+
+        // Update the display name of the package
+        String updatedDisplayName = "Le label";
+        when(mMockPackageManager.getApplicationLabel(any())).thenReturn(updatedDisplayName);
+
+        // Run updateAsync again. This should not re-index the app.
+        mInstance.updateAsync(false, false);
+        assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
+                .isTrue();
+        sr = db.search("", new SearchSpec.Builder().build());
+        results = sr.getNextPageAsync().get();
+        assertThat(results.size()).isEqualTo(1);
+
+        // Display name did not change
+        assertThat(
+                        results.get(0)
+                                .getGenericDocument()
+                                .getPropertyString(MobileApplication.APP_PROPERTY_ALTERNATE_NAMES))
+                .isEqualTo(originalDisplayName);
+
+        // Simulate Locale Change to fr-FR
+        mTestContext.setLocale(new Locale("fr", "FR"));
+
+        // Now it will update if we run updateAsync
+        mInstance.updateAsync(false, false);
+
+        // Wait for the update
+        assertThat(semaphore.tryAcquire(UPDATE_ASYNC_TIMEOUT.toSeconds(), TimeUnit.SECONDS))
+                .isTrue();
+
+        // Verify the app is re-indexed due to locale change forced update
+        sr = db.search("", new SearchSpec.Builder().build());
+        results = sr.getNextPageAsync().get();
+        assertThat(results.size()).isEqualTo(1);
+        assertThat(
+                        results.get(0)
+                                .getGenericDocument()
+                                .getPropertyString(MobileApplication.APP_PROPERTY_ALTERNATE_NAMES))
+                .isEqualTo(updatedDisplayName);
+
+        // Verify settings are updated with the new locale
+        settings.load();
+        assertThat(settings.getPreviousLocaleCode()).isEqualTo("fr");
+    }
+
+    @Test
     @RequiresFlagsEnabled(Flags.FLAG_ENABLE_ALL_PACKAGE_INDEXING_ON_INDEXER_UPDATE)
     public void testSubsequentRun_withIndexerUpdate_previouslyIndexedAppIsReIndexed()
             throws Exception {
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
         // Pretend there's one package on device
         setupMockPackageManager(
                 mMockPackageManager,
@@ -702,7 +964,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         // Create new instance that uses the updated settings.
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Run indexer again
         AppsUpdateStats stats1 = new AppsUpdateStats();
@@ -759,7 +1025,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
 
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        pauseContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        pauseContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
         // Wait for file setup, as file setup uses the same ExecutorService.
         afterSemaphore.acquire();
 
@@ -773,7 +1043,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         // Schedule a bunch of tasks. However, only one will run, and one other will be scheduled
         for (int i = 0; i < numOfNotifications / 2; i++) {
             // This will pretend to add apps repeatedly
-            mInstance.updateAsync(/* firstRun= */ false);
+            mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
         }
 
         // Now, we wait for getPackageManager to be called
@@ -795,7 +1065,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 createFakeResolveInfos(numOfNotifications),
                 /* appFunctionServices= */ ImmutableList.of());
         for (int i = numOfNotifications / 2; i < numOfNotifications; i++) {
-            mInstance.updateAsync(/* firstRun= */ false);
+            mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
         }
 
         // Now we allow syncing to continue
@@ -844,6 +1114,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                                                     mTestContext,
                                                     dataDir,
                                                     mAppsIndexerConfig,
+                                                    mIndexerForceUpdateConfig,
                                                     mSingleThreadedExecutor);
                                     // Data directory shouldn't have been created synchronously in
                                     // createInstance()
@@ -963,7 +1234,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
         // Wait for settings initialization
         afterSemaphore.acquire();
 
@@ -975,7 +1250,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 createFakeResolveInfos(docCount),
                 /* appFunctionServices= */ ImmutableList.of());
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
 
         // Wait for all async tasks to complete
         afterSemaphore.acquire();
@@ -1019,7 +1294,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         // the update should be zero, and if not it's because of mAppsDir
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         // Wait for file setup, as file setup uses the same ExecutorService.
         semaphore.acquire();
@@ -1032,7 +1311,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 createFakeResolveInfos(docCount),
                 /* appFunctionServices= */ ImmutableList.of());
 
-        mInstance.updateAsync(/* firstRun= */ false);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
 
         // Wait for all async tasks to complete
         semaphore.acquire();
@@ -1082,11 +1361,15 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
         // Wait for settings initialization
         afterSemaphore.acquire();
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
         afterSemaphore.acquire();
 
         ArgumentCaptor<JobInfo> jobInfoArgumentCaptor = ArgumentCaptor.forClass(JobInfo.class);
@@ -1137,7 +1420,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         mTestContext.setJobScheduler(mockJobScheduler);
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
         // Wait for file setup, as file setup uses the same ExecutorService.
         semaphore.acquire();
 
@@ -1147,7 +1434,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 createFakeResolveInfos(docCount),
                 /* appFunctionServices= */ ImmutableList.of());
 
-        mInstance.updateAsync(/* firstRun= */ true);
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
         // Wait for all async tasks to complete
         semaphore.acquire();
 
@@ -1186,7 +1473,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 };
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
         // Wait for settings initialization
         afterSemaphore.acquire();
 
@@ -1230,7 +1521,11 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
         mTestContext.setJobScheduler(mockJobScheduler);
         mInstance =
                 AppsIndexerUserInstance.createInstance(
-                        mTestContext, mAppsDir, mAppsIndexerConfig, mSingleThreadedExecutor);
+                        mTestContext,
+                        mAppsDir,
+                        mAppsIndexerConfig,
+                        mIndexerForceUpdateConfig,
+                        mSingleThreadedExecutor);
 
         int docCount = 10;
         CountDownLatch latch = setupLatch(docCount);
@@ -1241,8 +1536,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
                 /* appFunctionServices= */ ImmutableList.of());
         mInstance.doUpdate(/* firstRun= */ false, new AppsUpdateStats());
 
-        mInstance.updateAsync(/* firstRun= */ false);
-
+        mInstance.updateAsync(/* firstRun= */ true, /* isForceUpdateTriggered= */ false);
         // Wait for all async tasks to complete
         latch.await(10L, TimeUnit.SECONDS);
 
@@ -1251,6 +1545,7 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
 
     class TestContext extends ContextWrapper {
         @Nullable JobScheduler mJobScheduler;
+        private Locale mLocale = null;
 
         TestContext(Context base) {
             super(base);
@@ -1272,6 +1567,22 @@ public class AppsIndexerUserInstanceTest extends AppsIndexerTestBase {
 
         public void setJobScheduler(@Nullable JobScheduler jobScheduler) {
             mJobScheduler = jobScheduler;
+        }
+
+        public void setLocale(Locale locale) {
+            mLocale = locale;
+        }
+
+        @Override
+        public Resources getResources() {
+            if (mLocale == null) {
+                return super.getResources();
+            }
+            Configuration overrideConfig =
+                    new Configuration(super.getResources().getConfiguration());
+            overrideConfig.setLocale(mLocale);
+            Context configContext = createConfigurationContext(overrideConfig);
+            return configContext.getResources();
         }
 
         @Override
