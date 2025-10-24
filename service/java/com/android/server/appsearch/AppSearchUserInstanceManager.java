@@ -35,6 +35,7 @@ import com.android.appsearch.flags.Flags;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.appsearch.external.localstorage.AppSearchImpl;
+import com.android.server.appsearch.external.localstorage.AppSearchLogger;
 import com.android.server.appsearch.external.localstorage.stats.InitializeStats;
 import com.android.server.appsearch.external.localstorage.stats.CallStats;
 import com.android.server.appsearch.external.localstorage.visibilitystore.VisibilityChecker;
@@ -355,7 +356,8 @@ public final class AppSearchUserInstanceManager {
                             userHandle,
                             config,
                             executorManager,
-                            isolatedStorageServiceManager);
+                            isolatedStorageServiceManager,
+                            logger);
         } else {
             if (LogUtil.INFO) {
                 Log.i(
@@ -396,8 +398,21 @@ public final class AppSearchUserInstanceManager {
                             /* callStatsBuilder= */ null,
                             visibilityCheckerImpl,
                             frameworkRevocableFileDescriptorStore,
+                            // TODO(b/430289015): Right now AppSearchImpl infers isVMEnabledForUser
+                            // from whether this is null or not.
+                            // We should refactor to use the same value other places are using.
+                            // Caveats are for the very 1st time, we will treat the system as vm
+                            // disabled until migration finishes. We might want to refactor that
+                            // part as well.
                             icingInstance,
-                            new ServiceOptimizeStrategy(config));
+                            // This isVMEnabledForUser might not be accurate when data migration is
+                            // scheduled. Before it finishes, the system would behave like VM is
+                            // disabled, but this boolean is true.
+                            // But, since the optimization strategy itself can apply on non-vm
+                            // cases, and we are still targeting right devices, we can just
+                            // make it simple by just enabling it directly using this
+                            // isVMEnabledForUser boolean.
+                            new ServiceOptimizeStrategy(config, isVMEnabledForUser));
 
             // Update storage info file
             UserStorageInfo userStorageInfo =
@@ -477,7 +492,7 @@ public final class AppSearchUserInstanceManager {
         } catch (ExecutionException | InterruptedException e) {
             throw new AppSearchException(
                     AppSearchResult.RESULT_ABORTED,
-                    "User Instance creation for: " + userHandle + " failed to complete.");
+                    "User Instance creation for: " + userHandle + " failed to complete.", e);
         }
     }
 
@@ -677,12 +692,14 @@ public final class AppSearchUserInstanceManager {
             @NonNull UserHandle userHandle,
             @NonNull ServiceAppSearchConfig config,
             @NonNull ExecutorManager executorManager,
-            @NonNull IsolatedStorageServiceManager isolatedStorageServiceManager) {
+            @NonNull IsolatedStorageServiceManager isolatedStorageServiceManager,
+            @NonNull AppSearchLogger logger) {
         Objects.requireNonNull(userContext);
         Objects.requireNonNull(userHandle);
         Objects.requireNonNull(config);
         Objects.requireNonNull(executorManager);
         Objects.requireNonNull(isolatedStorageServiceManager);
+        Objects.requireNonNull(logger);
 
         IcingSearchEngineInterface isolatedIcingInterface =
                 new IcingSearchEngine(
@@ -717,8 +734,7 @@ public final class AppSearchUserInstanceManager {
         if (!DataMigrationUtil.needDataMigration(userContext, userHandle)) {
             // Data migration is not needed. But we still want to log an entry to
             // indicate that data migration is correctly skipped.
-            AppSearchUserInstance instance = getUserInstanceOrNull(userHandle);
-            if (vmFirstRun && instance != null && instance.getLogger() != null) {
+            if (vmFirstRun) {
                 // Skipped is effectively doing migration with 0 data.
                 CallStats.Builder callStatsBuilder =
                         new CallStats.Builder()
@@ -732,7 +748,7 @@ public final class AppSearchUserInstanceManager {
                                 .setLaunchVMEnabled(true)
                                 .setNumOperationsSucceeded(0)
                                 .setNumOperationsFailed(0);
-                instance.getLogger().logStats(callStatsBuilder.build());
+                logger.logStats(callStatsBuilder.build());
             }
             Log.i(TAG, "Data migration is not needed.");
             return isolatedIcingInterface;

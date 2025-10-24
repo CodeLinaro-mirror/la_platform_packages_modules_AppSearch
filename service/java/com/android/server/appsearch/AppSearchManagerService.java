@@ -170,8 +170,10 @@ import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -213,12 +215,23 @@ public class AppSearchManagerService extends SystemService {
     private final AppSearchModule.Lifecycle mLifecycle;
     private final SearchSessionStatsExtractor mSearchSessionStatsExtractor;
 
+    // Not using lock here as this is being used to throttle checkForOptimize and it doesn't need to
+    // be accurate.
+    private AtomicInteger mMutateBatchSize = new AtomicInteger(0);
+    private static final int CHECK_OPTIMIZE_INTERVAL = 100;
+
     // Tracks the scheduled persistToDisk task, ensuring only one persistToDisk task is scheduled
     // at a time.
     //TODO(b/405169836) Consider moving the ScheduledFutures to a better place, e.g.,
     // AppSearchUserInstance.
     @GuardedBy("mPerUserPersistToDiskFutureLocked")
     private final Map<UserHandle, ScheduledFuture<?>> mPerUserPersistToDiskFutureLocked =
+            new ArrayMap<>();
+
+    // TODO(b/435251329): As we might want to do the same things for other API calls, consider using
+    // Map<UserHandle, Map<CallType, ScheduledFuture>>
+    @GuardedBy("mPerUserCheckOptimizeFutureLocked")
+    private final Map<UserHandle, ScheduledFuture<?>> mPerUserCheckOptimizeFutureLocked =
             new ArrayMap<>();
 
     public AppSearchManagerService(Context context, AppSearchModule.Lifecycle lifecycle) {
@@ -299,6 +312,9 @@ public class AppSearchManagerService extends SystemService {
         //TODO(b/145759910) Add a direct callback when user clears the data instead of relying on
         // broadcasts
         IntentFilter packageChangedFilter = new IntentFilter();
+        if (!Flags.disableActionPackageRemovedPruning()) {
+            packageChangedFilter.addAction(Intent.ACTION_PACKAGE_REMOVED);
+        }
         packageChangedFilter.addAction(Intent.ACTION_PACKAGE_FULLY_REMOVED);
         packageChangedFilter.addAction(Intent.ACTION_PACKAGE_DATA_CLEARED);
         packageChangedFilter.addDataScheme("package");
@@ -341,6 +357,37 @@ public class AppSearchManagerService extends SystemService {
             }
 
             switch (action) {
+                case Intent.ACTION_PACKAGE_REMOVED:
+                    // This action is sent on package upgrades and downgrades. Upgrades are fine,
+                    // but we need to detect downgrades to clear AppSearch data.
+                    // Per PackageIntentParser.java:
+                    // EXTRA_REPLACING == false: UNINSTALLED
+                    // EXTRA_REPLACING == true AND EXTRA_DATA_REMOVED == false: UPGRADED
+                    // EXTRA_REPLACING == true AND EXTRA_DATA_REMOVED == true: DOWNGRADED
+                    if (Flags.disableActionPackageRemovedPruning()) {
+                        return; // Handling of ACTION_PACKAGE_REMOVED disabled.
+                    }
+                    if (!intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) {
+                        // Package is not being replaced -- if being uninstalled, will be handled by
+                        // the PACKAGE_FULLY_REMOVED broadcast.
+                        if (LogUtil.DEBUG) {
+                            Log.d(TAG, "Received ACTION_PACKAGE_REMOVED without REPLACING");
+                        }
+                        return;
+                    }
+                    if (!intent.getBooleanExtra(Intent.EXTRA_DATA_REMOVED, false)) {
+                        // Package being replaced but data is left intact -- probably an upgrade.
+                        if (LogUtil.DEBUG) {
+                            Log.d(
+                                    TAG,
+                                    "Received ACTION_PACKAGE_REMOVED with REPLACING but without "
+                                            + "EXTRA_DATA_REMOVED -- app being upgraded");
+                        }
+                        return;
+                    }
+                // Else package is being replaced and its data is being removed (downgraded
+                // system app). Fall through.
+
                 case Intent.ACTION_PACKAGE_FULLY_REMOVED:
                 case Intent.ACTION_PACKAGE_DATA_CLEARED:
                     Uri data = intent.getData();
@@ -355,17 +402,30 @@ public class AppSearchManagerService extends SystemService {
                         return;
                     }
 
-                    if (LogUtil.DEBUG) {
-                        Log.d(TAG, "Received " + action + " broadcast on package: " + packageName);
-                    }
-
                     int uid = intent.getIntExtra(Intent.EXTRA_UID, INVALID_UID);
                     if (uid == INVALID_UID) {
                         Log.e(TAG, "uid is missing in the intent: " + intent);
                         return;
                     }
 
-                    handlePackageRemoved(packageName, uid);
+                    if (LogUtil.INFO) {
+                        Log.i(TAG, "Handling " + action + " broadcast on package: " + packageName);
+                    }
+
+                    try {
+                        handlePackageRemoved(packageName, uid);
+                    } catch (RejectedExecutionException e) {
+                        // If the user stops before the package removal is handled, then it is
+                        // possible to get RejectedExecutionException here. Functionally this is not
+                        // a problem as data will be pruned when user is stopped, so catch the
+                        // exception and log it without crashing.
+                        // TODO(b/444300895): Review all executor usages to ensure
+                        //   RejectedExecutionException is safe throughout our codebase.
+                        Log.w(
+                                TAG,
+                                "Failed to remove package. It is likely that the user stops before"
+                                        + " removing the package.");
+                    }
                     break;
                 default:
                     Log.e(TAG, "Received unknown intent: " + intent);
@@ -398,7 +458,7 @@ public class AppSearchManagerService extends SystemService {
                                             mIsolatedStorageServiceManager);
                             instance.getAppSearchImpl().clearPackageData(packageName);
 
-                            if (Flags.enableDelayedPersistToDisk()) {
+                            if (Flags.enableDelayedPersistToDisk() || instance.isVMEnabled()) {
                                 maybeSchedulePersistToDisk(
                                         /* callingPackageName= */ null,
                                         BaseStats.INTERNAL_CALL_TYPE_HANDLE_PACKAGE_REMOVED,
@@ -462,7 +522,7 @@ public class AppSearchManagerService extends SystemService {
 
                             // Note: this is different from the "daily fully persist job" scheduled
                             //   in the next section.
-                            if (Flags.enableDelayedPersistToDisk()) {
+                            if (Flags.enableDelayedPersistToDisk() || instance.isVMEnabled()) {
                                 maybeSchedulePersistToDisk(
                                         /* callingPackageName= */ null,
                                         BaseStats.INTERNAL_CALL_TYPE_ON_USER_UNLOCKING,
@@ -512,6 +572,15 @@ public class AppSearchManagerService extends SystemService {
             if (persistToDiskFuture != null) {
                 // Cancel the persistToDisk task if it is scheduled but has not yet started.
                 persistToDiskFuture.cancel(/* mayInterruptIfRunning= */ false);
+            }
+
+            ScheduledFuture<?> checkOptimizeFuture;
+            synchronized (mPerUserCheckOptimizeFutureLocked) {
+                checkOptimizeFuture = mPerUserCheckOptimizeFutureLocked.remove(userHandle);
+            }
+            if (checkOptimizeFuture != null) {
+                // Cancel the checkOptimize task if it is scheduled but has not yet started.
+                checkOptimizeFuture.cancel(/* mayInterruptIfRunning= */ false);
             }
 
             if (Flags.enableUserInstanceFutures()) {
@@ -660,7 +729,7 @@ public class AppSearchManagerService extends SystemService {
                     invokeCallbackOnResult(callback, AppSearchResultParcel
                             .fromInternalSetSchemaResponse(internalSetSchemaResponse));
 
-                    if (Flags.enableDelayedPersistToDisk()) {
+                    if (Flags.enableDelayedPersistToDisk() || instance.isVMEnabled()) {
                         maybeSchedulePersistToDisk(
                                 callingPackageName,
                                 BaseStats.CALL_TYPE_SET_SCHEMA,
@@ -1107,7 +1176,7 @@ public class AppSearchManagerService extends SystemService {
                         }
 
                         // Now that the batch has been written, persist the newly written data.
-                        if (Flags.enableDelayedPersistToDisk()) {
+                        if (Flags.enableDelayedPersistToDisk() || instance.isVMEnabled()) {
                             maybeSchedulePersistToDisk(
                                     callingPackageName,
                                     BaseStats.CALL_TYPE_PUT_DOCUMENTS,
@@ -1132,8 +1201,10 @@ public class AppSearchManagerService extends SystemService {
                                     docs.add(new GenericDocument(documentParcels.get(i)));
                                 }
                                 for (int i = 0; i < takenActionDocumentParcels.size(); i++) {
-                                    docs.add(
-                                            new GenericDocument(takenActionDocumentParcels.get(i)));
+                                    GenericDocument document = new GenericDocument(
+                                        takenActionDocumentParcels.get(i));
+                                    docs.add(document);
+                                    takenActionGenericDocuments.add(document);
                                 }
                                 instance.getAppSearchImpl().batchPutDocuments(
                                         callingPackageName,
@@ -1242,11 +1313,17 @@ public class AppSearchManagerService extends SystemService {
 
                     // The existing documents with same ID will be deleted, so there may be some
                     // resources that could be released after optimize().
-                    checkForOptimize(
+                    if ((Flags.enableThrottlingCheckOptimizeInfo()
+                            || isVmEnabledForUser(targetUser))
+                            && statusCode == AppSearchResult.RESULT_OUT_OF_SPACE) {
+                        checkForOptimize(targetUser, instance, /*scheduleWithDelay=*/ false);
+                    } else {
+                        checkForOptimize(
                             targetUser,
                             instance,
                             /* mutateBatchSize= */
                             request.getDocumentsParcel().getTotalDocumentCount());
+                    }
                 } catch (AppSearchException
                          | RuntimeException
                          | InterruptedException
@@ -2087,7 +2164,8 @@ public class AppSearchManagerService extends SystemService {
                             callingDatabaseName,
                             visibilityConfigs,
                             callStatsBuilder);
-                    if (Flags.enableDelayedPersistToDisk()) {
+
+                    if (Flags.enableDelayedPersistToDisk() || instance.isVMEnabled()) {
                         maybeSchedulePersistToDisk(
                                 callingPackageName,
                                 BaseStats.CALL_TYPE_SET_BLOB_VISIBILITY,
@@ -2763,8 +2841,14 @@ public class AppSearchManagerService extends SystemService {
                             }
                         }
                     }
-                    // Now that the batch has been written, persist the newly written data.
-                    if (Flags.enableDelayedPersistToDisk()) {
+
+                    if ((Flags.enableThrottlingCheckOptimizeInfo()
+                            || isVmEnabledForUser(targetUser))
+                            && statusCode == AppSearchResult.RESULT_OUT_OF_SPACE) {
+                        checkForOptimize(targetUser, instance, /*scheduleWithDelay=*/ false);
+                    }
+
+                    if (Flags.enableDelayedPersistToDisk() || instance.isVMEnabled()) {
                         maybeSchedulePersistToDisk(
                                 callingPackageName,
                                 BaseStats.CALL_TYPE_PUT_DOCUMENTS_FROM_FILE,
@@ -3168,8 +3252,8 @@ public class AppSearchManagerService extends SystemService {
                             }
                         }
                     }
-                    // Now that the batch has been written, persist the newly written data.
-                    if (Flags.enableDelayedPersistToDisk()) {
+
+                    if (Flags.enableDelayedPersistToDisk() || instance.isVMEnabled()) {
                         maybeSchedulePersistToDisk(callingPackageName,
                                 BaseStats.CALL_TYPE_REMOVE_DOCUMENTS_BY_ID,
                                 targetUser,
@@ -3288,8 +3372,8 @@ public class AppSearchManagerService extends SystemService {
                             /*deletedIds=*/null,
                             /* removeStatsBuilder= */ null,
                             callStatsBuilder);
-                    // Now that the batch has been written, persist the newly written data.
-                    if (Flags.enableDelayedPersistToDisk()) {
+
+                    if (Flags.enableDelayedPersistToDisk() || instance.isVMEnabled()) {
                         maybeSchedulePersistToDisk(callingPackageName,
                                 BaseStats.CALL_TYPE_REMOVE_DOCUMENTS_BY_SEARCH,
                                 targetUser,
@@ -3795,6 +3879,17 @@ public class AppSearchManagerService extends SystemService {
                             mAppSearchConfig,
                             mExecutorManager,
                             mIsolatedStorageServiceManager);
+                    // It is possible that data got modified during initialization (e.g. rebuild),
+                    // so we have to check if we need to schedule persistToDisk.
+                    if (Flags.enableDelayedPersistToDisk()) {
+                        maybeSchedulePersistToDisk(
+                                callingPackageName,
+                                BaseStats.CALL_TYPE_INITIALIZE,
+                                targetUser,
+                                mAppSearchConfig.getLightweightPersistType(),
+                                mAppSearchConfig.getCachedPersistDelayMillis(),
+                                /* forceSchedule= */ false);
+                    }
                     ++operationSuccessCount;
                     invokeCallbackOnResult(callback, AppSearchResultParcel.fromVoid());
                 } catch (AppSearchException | RuntimeException e) {
@@ -4294,6 +4389,25 @@ public class AppSearchManagerService extends SystemService {
             // We shouldn't schedule any task to locked user.
             return;
         }
+
+        // Check the batch size here so we can reduce code duplication, and more importantly,
+        // fully control the scheduling.
+        if (Flags.enableThrottlingCheckOptimizeInfo() || isVmEnabledForUser(targetUser)) {
+            // It is OK not to lock here as we will only schedule checkForOptimize once.
+            long updatedMutateBatchSize = mMutateBatchSize.addAndGet(mutateBatchSize);
+            if (updatedMutateBatchSize >= CHECK_OPTIMIZE_INTERVAL) {
+                boolean checkOptimizeScheduled =
+                        checkForOptimize(targetUser, instance, /* scheduleWithDelay= */ true);
+                if (checkOptimizeScheduled) {
+                    // It is OK to reset the counter here even if it might get increased in another
+                    // thread, as checkForOptimize has been scheduled.
+                    mMutateBatchSize.set(0);
+                }
+            }
+            return;
+        }
+
+        // Run checkForOptimize directly on the executor if the flag is off or VM is disabled.
         long totalLatencyStartMillis = SystemClock.elapsedRealtime();
         mExecutorManager.executeLambdaForUserNoCallbackAsync(
                 targetUser,
@@ -4332,26 +4446,48 @@ public class AppSearchManagerService extends SystemService {
                 });
     }
 
+    /**
+     * Runs/Schedules a checkForOptimize task.
+     *
+     * <p>Depending on the flag and VM status, this method either schedules a task to run
+     * checkForOptimize on a delay, or runs it directly on the executor.
+     *
+     * @return true if the checkForOptimize task is scheduled, false otherwise.
+     */
     @WorkerThread
-    private void checkForOptimize(
+    private boolean checkForOptimize(
+            @NonNull UserHandle targetUser, @NonNull AppSearchUserInstance instance) {
+        boolean scheduleWithDelay =
+                Flags.enableThrottlingCheckOptimizeInfo() || isVmEnabledForUser(targetUser);
+        return checkForOptimize(targetUser, instance, scheduleWithDelay);
+    }
+
+    /**
+     * @return true if the checkForOptimize task is run/scheduled, false otherwise.
+     *
+     * @param scheduleWithDelay if true, the task will be scheduled with a delay, otherwise it will
+     *     be run on the executor directly.
+     */
+    @WorkerThread
+    private boolean checkForOptimize(
             @NonNull UserHandle targetUser,
-            @NonNull AppSearchUserInstance instance) {
+            @NonNull AppSearchUserInstance instance,
+            boolean scheduleWithDelay) {
         final long callReceivedTimestampMillis = System.currentTimeMillis();
         if (mServiceImplHelper.isUserLocked(targetUser)) {
             // We shouldn't schedule any task to locked user.
-            return;
+            return false;
         }
+
         long totalLatencyStartMillis = SystemClock.elapsedRealtime();
-        mExecutorManager.executeLambdaForUserNoCallbackAsync(
-                targetUser,
-                /* isReadOnly= */ false,
+        Runnable checkForOptimizeTask =
                 () -> {
                     long waitExecutorEndTimeMillis = SystemClock.elapsedRealtime();
                     OptimizeStats.Builder optimizeStatsBuilder = new OptimizeStats.Builder();
                     CallStats.Builder callStatsBuilder = new CallStats.Builder();
                     try {
-                        instance.getAppSearchImpl().checkForOptimize(optimizeStatsBuilder,
-                                callStatsBuilder);
+                        instance.getAppSearchImpl()
+                                .checkForOptimize(optimizeStatsBuilder, callStatsBuilder);
                     } catch (Exception e) {
                         Log.w(TAG, "Error occurred when check for optimize", e);
                     } finally {
@@ -4362,22 +4498,45 @@ public class AppSearchManagerService extends SystemService {
                         int onExecutorLatencyMillis =
                                 (int) (totalLatencyEndMillis - waitExecutorEndTimeMillis);
 
-                        OptimizeStats oStats = optimizeStatsBuilder.setTotalLatencyMillis(
-                                        totalLatency)
-                                .setCallReceivedTimestampMillis(callReceivedTimestampMillis)
-                                .setExecutorAcquisitionLatencyMillis(executorAcquisitionLatency)
-                                .setOnExecutorLatencyMillis(onExecutorLatencyMillis)
-                                .build();
+                        OptimizeStats oStats =
+                                optimizeStatsBuilder
+                                        .setTotalLatencyMillis(totalLatency)
+                                        .setCallReceivedTimestampMillis(callReceivedTimestampMillis)
+                                        .setExecutorAcquisitionLatencyMillis(
+                                                executorAcquisitionLatency)
+                                        .setOnExecutorLatencyMillis(onExecutorLatencyMillis)
+                                        .build();
                         if (oStats.getOriginalDocumentCount() > 0) {
-                            // see if optimize has been run by checking originalDocumentCount
-                            if (oStats.getDeletedDocumentCount()
-                                    + oStats.getExpiredDocumentCount() > 0) {
+                            if (oStats.getDeletedDocumentCount() + oStats.getExpiredDocumentCount()
+                                    > 0) {
                                 dropStorageInfoCacheForUser(targetUser);
                             }
                             instance.getLogger().logStats(oStats);
                         }
                     }
-                });
+                };
+
+        if (scheduleWithDelay) {
+            synchronized (mPerUserCheckOptimizeFutureLocked) {
+                ScheduledFuture<?> checkForOptimizeFuture =
+                        mPerUserCheckOptimizeFutureLocked.get(targetUser);
+                if (checkForOptimizeFuture == null || checkForOptimizeFuture.isDone()) {
+                    Log.i(TAG, "Scheduling checkForOptimize for user: " + targetUser);
+                    checkForOptimizeFuture =
+                            mExecutorManager.scheduleLambdaForUserNoCallbackAsync(
+                                    targetUser,
+                                    checkForOptimizeTask,
+                                    mAppSearchConfig.getCachedCheckOptimizeDelayMillis(),
+                                    TimeUnit.MILLISECONDS);
+                    mPerUserCheckOptimizeFutureLocked.put(targetUser, checkForOptimizeFuture);
+                }
+            }
+        } else {
+            mExecutorManager.executeLambdaForUserNoCallbackAsync(
+                    targetUser, /* isReadOnly= */ false, checkForOptimizeTask);
+        }
+
+        return true;
     }
 
     /**
