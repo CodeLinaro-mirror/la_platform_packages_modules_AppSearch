@@ -21,6 +21,7 @@ import android.annotation.Nullable;
 import android.app.appsearch.annotation.CanIgnoreReturnValue;
 import android.app.appsearch.stats.BaseStats;
 import android.app.appsearch.stats.SchemaMigrationStats;
+import android.app.appsearch.util.LogUtil;
 import android.content.Context;
 import android.os.Build;
 import android.os.Process;
@@ -152,6 +153,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
         long calculatedTimeSincePreviousRequestMillis = -1L;
 
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "CallStats=", stats.getTotalLatencyMillis(), stats);
             if (mLastCallStatsTimestampMillisLocked > 0) {
                 calculatedTimeSincePreviousRequestMillis =
                         Math.max(
@@ -179,6 +181,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull PutDocumentStats stats) {
         Objects.requireNonNull(stats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "PutDocumentStats=", stats.getTotalLatencyMillis(), stats);
             if (shouldLogForTypeLocked(
                     BaseStats.CALL_TYPE_PUT_DOCUMENT, stats.getEnabledFeatures())) {
                 logStatsImplLocked(stats);
@@ -190,6 +193,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull InitializeStats stats) {
         Objects.requireNonNull(stats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "InitializeStats=", stats.getTotalLatencyMillis(), stats);
             if (shouldLogForTypeLocked(
                     BaseStats.CALL_TYPE_INITIALIZE, stats.getEnabledFeatures())) {
                 logStatsImplLocked(stats);
@@ -201,6 +205,8 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull AppsUpdateStats appsUpdateStats) {
         Objects.requireNonNull(appsUpdateStats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "AppsUpdateStats=", appsUpdateStats.getTotalLatencyMillis(),
+                    appsUpdateStats);
             if (shouldLogForTypeLocked(
                     BaseStats.INTERNAL_CALL_TYPE_APPS_INDEXER,
                     BaseStats.NO_FEATURES_ENABLED_BITMASK)) {
@@ -213,6 +219,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull AppOpenEventStats appOpenEventStats) {
         Objects.requireNonNull(appOpenEventStats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "AppOpenEventStats=", appOpenEventStats.getTotalLatencyMillis(), appOpenEventStats);
             if (shouldLogForTypeLocked(
                     BaseStats.INTERNAL_CALL_TYPE_APP_OPEN_EVENT_INDEXER,
                     BaseStats.NO_FEATURES_ENABLED_BITMASK)) {
@@ -225,6 +232,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull QueryStats stats) {
         Objects.requireNonNull(stats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "QueryStats=", stats.getTotalLatencyMillis(), stats);
             if (shouldLogForTypeLocked(BaseStats.CALL_TYPE_SEARCH, stats.getEnabledFeatures())) {
                 logStatsImplLocked(stats);
             }
@@ -235,6 +243,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull RemoveStats stats) {
         Objects.requireNonNull(stats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "RemoveStats=", stats.getTotalLatencyMillis(), stats);
             if (shouldLogForTypeLocked(
                     BaseStats.CALL_TYPE_REMOVE_DOCUMENTS_BY_ID, stats.getEnabledFeatures())) {
                 logStatsImplLocked(stats);
@@ -246,6 +255,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull OptimizeStats stats) {
         Objects.requireNonNull(stats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "OptimizeStats=", stats.getTotalLatencyMillis(), stats);
             if (getCachedApiCallStatsLimitForFeatures(stats.getEnabledFeatures()) > 0) {
                 // Unlike most other API calls, Optimize does not produce a CallStats, so we
                 // record OptimizeStats in the queue.
@@ -263,6 +273,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull SetSchemaStats stats) {
         Objects.requireNonNull(stats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "SetSchemaStats=", stats.getTotalLatencyMillis(), stats);
             if (shouldLogForTypeLocked(
                     BaseStats.CALL_TYPE_SET_SCHEMA, stats.getEnabledFeatures())) {
                 logStatsImplLocked(stats);
@@ -274,6 +285,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull SchemaMigrationStats stats) {
         Objects.requireNonNull(stats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "SchemaMigrationStats=", stats.getTotalLatencyMillis(), stats);
             if (shouldLogForTypeLocked(
                     BaseStats.CALL_TYPE_SCHEMA_MIGRATION, stats.getEnabledFeatures())) {
                 logStatsImplLocked(stats);
@@ -298,6 +310,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull VmInitializationStats stats) {
         Objects.requireNonNull(stats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "VmInitializationStats=", stats.getVmInitType(), stats);
             // ignore close exception
             AppSearchStatsLog.write(
                     AppSearchStatsLog.APP_SEARCH_VM_INITIALIZATION_STATS_REPORTED,
@@ -310,6 +323,7 @@ public class PlatformLogger implements InternalAppSearchLogger {
     public void logStats(@NonNull PersistToDiskStats stats) {
         Objects.requireNonNull(stats);
         synchronized (mLock) {
+            LogUtil.piiTrace(TAG, "PersistToDiskStats=", stats.getTotalLatencyMillis(), stats);
             if (shouldLogForTypeLocked(BaseStats.CALL_TYPE_FLUSH, stats.getEnabledFeatures())) {
                 logStatsImplLocked(stats);
             }
@@ -1174,13 +1188,15 @@ public class PlatformLogger implements InternalAppSearchLogger {
      * default Trunkfooder value if LAUNCH_VM is enabled.
      **/
     private int getSamplingInterval(@BaseStats.CallType int statsType, long enabledFeatures) {
+        int samplingInterval = getSamplingIntervalFromConfig(statsType);
         if (("eng".equals(Build.TYPE) || "userdebug".equals(Build.TYPE))
                 && BaseStats.areFeaturesOn(enabledFeatures, List.of(BaseStats.LAUNCH_VM))) {
             // Opt any eng or userdebug device with vm-enabled in for higher sampling.
             // TODO(b/) Remove this once the flag is rolled out to trunkfood.
-            return ServiceAppSearchConfig.TRUNKFOODER_SAMPLING_INTERVAL;
+            return Math.min(
+                    samplingInterval, ServiceAppSearchConfig.TRUNKFOODER_SAMPLING_INTERVAL);
         }
-        return getSamplingIntervalFromConfig(statsType);
+        return samplingInterval;
     }
 
     /** Returns sampling ratio for stats type specified form {@link ServiceAppSearchConfig}. */
@@ -1203,6 +1219,8 @@ public class PlatformLogger implements InternalAppSearchLogger {
                 return mConfig.getCachedSamplingIntervalForOptimizeStats();
             case BaseStats.INTERNAL_CALL_TYPE_APP_OPEN_EVENT_INDEXER:
                 return mConfig.getAppOpenEventIndexerLoggingSamplingRate();
+            case BaseStats.INTERNAL_CALL_TYPE_ISOLATED_STORAGE_DATA_MIGRATION:
+                return mConfig.getIsolatedStorageDataMigrationSamplingRate();
             case BaseStats.CALL_TYPE_UNKNOWN:
             case BaseStats.CALL_TYPE_SET_SCHEMA:
             case BaseStats.CALL_TYPE_GET_DOCUMENT:
@@ -1227,7 +1245,6 @@ public class PlatformLogger implements InternalAppSearchLogger {
             case BaseStats.CALL_TYPE_OPEN_WRITE_BLOB:
             case BaseStats.CALL_TYPE_COMMIT_BLOB:
             case BaseStats.CALL_TYPE_OPEN_READ_BLOB:
-            case BaseStats.INTERNAL_CALL_TYPE_ISOLATED_STORAGE_DATA_MIGRATION:
             // TODO(b/173532925) Some of them above will have dedicated sampling ratio config
             default:
                 return mConfig.getCachedSamplingIntervalDefault();

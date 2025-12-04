@@ -100,6 +100,9 @@ public class IsolatedStorageServiceManager {
     private static final long VM_STATUS_CHECK_INTERVAL_SECONDS = 60; // 1 minute
 
     private static final UserHandle ISOLATED_STORAGE_USER = UserHandle.SYSTEM;
+    private static final String SYSTEM_PROPERTY_ENABLE_DEBUG_BUILD = "ro.debuggable";
+    private static final boolean IS_DEBUG_BUILD =
+            SystemProperties.getInt(SYSTEM_PROPERTY_ENABLE_DEBUG_BUILD, /* def= */ 0) == 1;
 
     private final Context mContext;
     private final ServiceAppSearchConfig mAppSearchConfig;
@@ -204,9 +207,11 @@ public class IsolatedStorageServiceManager {
         boolean protectedAppSearchVmEnabled =
                 !SystemProperties.getBoolean(
                         SYSTEM_PROPERTY_ENABLE_NONPROTECTED_APPSEARCH_VM, /* def= */ false);
-        return protectedAppSearchVmEnabled
-                ? ((vmm.getCapabilities() & VirtualMachineManager.CAPABILITY_PROTECTED_VM) != 0)
-                : true;
+        int requiredCapability =
+                protectedAppSearchVmEnabled
+                        ? VirtualMachineManager.CAPABILITY_PROTECTED_VM
+                        : VirtualMachineManager.CAPABILITY_NON_PROTECTED_VM;
+        return (vmm.getCapabilities() & requiredCapability) != 0;
     }
 
     /** Cleans up the isolated storage service related data. */
@@ -979,12 +984,21 @@ public class IsolatedStorageServiceManager {
                 mConsecutiveVmDataUnlockDoeErrorsLocked++;
                 if (mConsecutiveVmDataUnlockDoeErrorsLocked
                         >= CONSECUTIVE_VM_DATA_UNLOCK_DOE_ERROR_THRESHOLD) {
-                    if (mIsolatedStorageService.deleteVm()) {
-                        mConsecutiveVmDataUnlockDoeErrorsLocked = 0;
+                    // keep the vm on debug builds to surface the unlock issues
+                    if (IS_DEBUG_BUILD) {
                         Log.wtf(
                                 TAG,
-                                "Deleted the VM due to consecutive DOE errors when trying to"
-                                        + " unlock vm data");
+                                "Saw at least "
+                                        + CONSECUTIVE_VM_DATA_UNLOCK_DOE_ERROR_THRESHOLD
+                                        + " consecutive DOE errors when trying to unlock vm data");
+                    } else {
+                        if (mIsolatedStorageService.deleteVm()) {
+                            mConsecutiveVmDataUnlockDoeErrorsLocked = 0;
+                            Log.wtf(
+                                    TAG,
+                                    "Deleted the VM due to consecutive DOE errors when trying to"
+                                            + " unlock vm data");
+                        }
                     }
                 }
                 throw e;
