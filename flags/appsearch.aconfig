@@ -557,15 +557,7 @@ flag {
     }
 }
 
-flag {
-    name: "enable_indexer_run_on_app_function_component_change"
-    namespace: "appsearch"
-    description: "Enables running apps indexer when app function component within an app changes."
-    bug: "409611864"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
+
 
 flag {
     name: "enable_indexer_run_on_ota_update"
@@ -680,13 +672,6 @@ flag {
     namespace: "appsearch"
     description: "Enables the Eigen library for embedding scoring."
     bug: "420960001"
-}
-
-flag {
-    name: "enable_wiping_out_system_server_data_after_migration"
-    namespace: "appsearch"
-    description: "Enable wiping out old icing directory after data has been migrated to the VM."
-    bug: "422162268"
 }
 
 flag {
@@ -903,4 +888,11 @@ flag {
     namespace: "appsearch"
     description: "Persist indexer settings as a proto using AtomicFile"
     bug: "413737868"
+}
+
+flag {
+    name: "enable_schedule_maintenance_job"
+    namespace: "appsearch"
+    description: "Enables schedule the appsearch maintenance job in the job scheduler service."
+    bug: "408269409"
 }
