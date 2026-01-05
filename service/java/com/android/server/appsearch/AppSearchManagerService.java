@@ -108,6 +108,7 @@ import android.content.pm.PackageStats;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.ParcelFileDescriptor;
 import android.os.PersistableBundle;
 import android.os.Process;
@@ -715,12 +716,21 @@ public class AppSearchManagerService extends SystemService {
                 int operationFailureCount = 0;
                 try {
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    Bundle accountPropertyBundle = request.getSchemasWipeoutAccountPropertyPaths();
+                    Map<String, Set<String>> accountPropertyPaths = new ArrayMap<>();
+                    if (accountPropertyBundle != null) {
+                        for (String key : accountPropertyBundle.keySet()) {
+                            accountPropertyPaths.put(key,
+                                    new ArraySet<>(accountPropertyBundle.getStringArrayList(key)));
+                        }
+                    }
                     InternalSetSchemaResponse internalSetSchemaResponse =
                             instance.getAppSearchImpl().setSchema(
                                     callingPackageName,
                                     request.getDatabaseName(),
                                     request.getSchemas(),
                                     request.getVisibilityConfigs(),
+                                    accountPropertyPaths,
                                     request.isForceOverride(),
                                     request.getSchemaVersion(),
                                     setSchemaStatsBuilder,
@@ -1461,64 +1471,7 @@ public class AppSearchManagerService extends SystemService {
                     AppSearchBatchResult.Builder<String, GenericDocumentParcel> resultBuilder =
                             new AppSearchBatchResult.Builder<>();
 
-                    if (!Flags.enableBatchGet()) {
-                        for (String id : request.getGetByDocumentIdRequest().getIds()) {
-                            try {
-                                GenericDocument document;
-                                if (global) {
-                                    boolean callerHasSystemAccess = instance.getVisibilityChecker()
-                                            .doesCallerHaveSystemAccess(
-                                                    request.getCallerAttributionSource()
-                                                            .getPackageName());
-                                    Map<String, List<String>> typePropertyPaths =
-                                            request.getGetByDocumentIdRequest().getProjections();
-                                    if (request.isForEnterprise()) {
-                                        EnterpriseSearchSpecTransformer.transformPropertiesMap(
-                                                typePropertyPaths);
-                                    }
-                                    document = instance.getAppSearchImpl().globalGetDocument(
-                                            request.getTargetPackageName(),
-                                            request.getDatabaseName(),
-                                            request.getGetByDocumentIdRequest().getNamespace(),
-                                            id,
-                                            typePropertyPaths,
-                                            new FrameworkCallerAccess(
-                                                    request.getCallerAttributionSource(),
-                                                    callerHasSystemAccess,
-                                                    request.isForEnterprise()),
-                                            callStatsBuilder);
-                                    if (request.isForEnterprise()) {
-                                        document =
-                                                EnterpriseSearchResultPageTransformer
-                                                        .transformDocument(
-                                                                request.getTargetPackageName(),
-                                                                request.getDatabaseName(),
-                                                                document);
-                                    }
-                                } else {
-                                    document = instance.getAppSearchImpl().getDocument(
-                                            request.getTargetPackageName(),
-                                            request.getDatabaseName(),
-                                            request.getGetByDocumentIdRequest().getNamespace(),
-                                            id,
-                                            request.getGetByDocumentIdRequest().getProjections(),
-                                            callStatsBuilder);
-                                }
-                                ++operationSuccessCount;
-                                resultBuilder.setSuccess(id, document.getDocumentParcel());
-                            } catch (AppSearchException | RuntimeException e) {
-                                // Since we can only include one status code in the atom,
-                                // for failures, we would just save the one for the last failure
-                                // Also, we don't rethrow here, so we can keep trying for
-                                // the following ones.
-                                AppSearchResult<GenericDocumentParcel> result =
-                                        throwableToFailedResult(e);
-                                resultBuilder.setResult(id, result);
-                                statusCode = result.getResultCode();
-                                ++operationFailureCount;
-                            }
-                        }
-                    } else if (!request.getGetByDocumentIdRequest().getIds().isEmpty()) {
+                    if (!request.getGetByDocumentIdRequest().getIds().isEmpty()) {
                         AppSearchBatchResult<String, GenericDocument> getDocumentsResult;
                         if (global) {
                             boolean callerHasSystemAccess = instance.getVisibilityChecker()
@@ -4210,24 +4163,15 @@ public class AppSearchManagerService extends SystemService {
                 }
                 AppSearchUserInstance instance =
                         mAppSearchUserInstanceManager.getUserInstanceOrNull(userHandle);
-                if (instance == null || Flags.enableStorageInfoCache()) {
-                    Context userContext =
-                            mAppSearchEnvironment.createContextAsUser(mContext, userHandle);
-                    UserStorageInfo userStorageInfo =
-                            mAppSearchUserInstanceManager
-                                .getOrCreateUserStorageInfoInstance(
-                                    userContext, userHandle);
+                Context userContext =
+                        mAppSearchEnvironment.createContextAsUser(mContext, userHandle);
+                UserStorageInfo userStorageInfo =
+                        mAppSearchUserInstanceManager
+                            .getOrCreateUserStorageInfoInstance(
+                                userContext, userHandle);
 
-                    refreshCachedStorageInfoIfNecessary(instance, userStorageInfo);
-                    stats.dataSize += userStorageInfo.getSizeBytesForPackage(packageName);
-                } else {
-                    stats.dataSize +=
-                            instance.getAppSearchImpl()
-                                    .getStorageInfoForPackages(
-                                            new ArraySet<>(Collections.singleton(packageName)),
-                                            /*callStatsBuilder=*/null)
-                                    .getSizeBytes();
-                }
+                refreshCachedStorageInfoIfNecessary(instance, userStorageInfo);
+                stats.dataSize += userStorageInfo.getSizeBytesForPackage(packageName);
             } catch (AppSearchException | InterruptedException | RuntimeException e) {
                 Log.e(
                         TAG,
@@ -4257,25 +4201,17 @@ public class AppSearchManagerService extends SystemService {
                 }
                 AppSearchUserInstance instance =
                         mAppSearchUserInstanceManager.getUserInstanceOrNull(userHandle);
-                if (instance == null || Flags.enableStorageInfoCache()) {
-                    Context userContext =
-                            mAppSearchEnvironment.createContextAsUser(mContext, userHandle);
-                    UserStorageInfo userStorageInfo =
-                            mAppSearchUserInstanceManager
-                                .getOrCreateUserStorageInfoInstance(
-                                    userContext, userHandle);
+                Context userContext =
+                        mAppSearchEnvironment.createContextAsUser(mContext, userHandle);
+                UserStorageInfo userStorageInfo =
+                        mAppSearchUserInstanceManager
+                            .getOrCreateUserStorageInfoInstance(
+                                userContext, userHandle);
 
-                    refreshCachedStorageInfoIfNecessary(instance, userStorageInfo);
-                    for (int i = 0; i < packagesForUid.length; i++) {
-                        stats.dataSize += userStorageInfo.getSizeBytesForPackage(
-                            packagesForUid[i]);
-                    }
-                } else {
-                    Set<String> packageNames = new ArraySet<>(packagesForUid);
-                    stats.dataSize +=
-                            instance.getAppSearchImpl()
-                                .getStorageInfoForPackages(packageNames, /*callStatsBuilder=*/null)
-                                .getSizeBytes();
+                refreshCachedStorageInfoIfNecessary(instance, userStorageInfo);
+                for (int i = 0; i < packagesForUid.length; i++) {
+                    stats.dataSize += userStorageInfo.getSizeBytesForPackage(
+                        packagesForUid[i]);
                 }
             } catch (AppSearchException | InterruptedException | RuntimeException e) {
                 Log.e(TAG, "Unable to augment storage stats for uid " + uid, e);
@@ -4299,33 +4235,15 @@ public class AppSearchManagerService extends SystemService {
                 }
                 AppSearchUserInstance instance =
                         mAppSearchUserInstanceManager.getUserInstanceOrNull(userHandle);
-                if (instance == null || Flags.enableStorageInfoCache()) {
-                    Context userContext =
-                            mAppSearchEnvironment.createContextAsUser(mContext, userHandle);
-                    UserStorageInfo userStorageInfo =
-                            mAppSearchUserInstanceManager
-                                .getOrCreateUserStorageInfoInstance(
-                                    userContext, userHandle);
+                Context userContext =
+                        mAppSearchEnvironment.createContextAsUser(mContext, userHandle);
+                UserStorageInfo userStorageInfo =
+                        mAppSearchUserInstanceManager
+                            .getOrCreateUserStorageInfoInstance(
+                                userContext, userHandle);
 
-                    refreshCachedStorageInfoIfNecessary(instance, userStorageInfo);
-                    stats.dataSize += userStorageInfo.getTotalSizeBytes();
-                } else {
-                    List<PackageInfo> packagesForUser =
-                            mPackageManager.getInstalledPackagesAsUser(
-                                    /* flags= */ 0, userHandle.getIdentifier());
-                    if (packagesForUser != null) {
-                        Set<String> packageNames = new ArraySet<>();
-                        for (int i = 0; i < packagesForUser.size(); i++) {
-                            String packageName = packagesForUser.get(i).packageName;
-                            packageNames.add(packageName);
-                        }
-                        stats.dataSize +=
-                                instance.getAppSearchImpl()
-                                        .getStorageInfoForPackages(
-                                                packageNames, /*callStatsBuilder=*/null)
-                                        .getSizeBytes();
-                    }
-                }
+                refreshCachedStorageInfoIfNecessary(instance, userStorageInfo);
+                stats.dataSize += userStorageInfo.getTotalSizeBytes();
             } catch (AppSearchException | InterruptedException | RuntimeException e) {
                 Log.e(TAG, "Unable to augment storage stats for " + userHandle, e);
                 ExceptionUtil.handleException(e);
@@ -4806,10 +4724,6 @@ public class AppSearchManagerService extends SystemService {
      * updates in storage usage.
      */
     private void dropStorageInfoCacheForUser(@NonNull UserHandle targetUser) {
-        if (!Flags.enableStorageInfoCache()) {
-            return;
-        }
-
         Context targetContext =
                 mAppSearchEnvironment.createContextAsUser(mContext, targetUser);
         UserStorageInfo userStorageInfo =

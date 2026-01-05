@@ -19,6 +19,7 @@ package com.android.server.appsearch.appsindexer;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
@@ -210,6 +211,26 @@ class TestUtils {
                     + "    </xs:documentType>"
                     + "</xs:schema>";
 
+    /** Test appfunctions XML with print function. */
+    public static final String APP_FUNCTION_XML_WITH_PRINT =
+            "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
+                    + "<appfunctions>\n"
+                    + "  <AppFunctionStaticMetadata>\n"
+                    + "    <id>com.appLevelSchema.utils#print</id>\n"
+                    + "    <functionId>com.appLevelSchema.utils#print</functionId>\n"
+                    + "  </AppFunctionStaticMetadata>\n"
+                    + "</appfunctions>";
+
+    /** Test appfunctions XML with search function. */
+    public static final String APP_FUNCTION_XML_WITH_SEARCH =
+            "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
+                    + "<appfunctions>\n"
+                    + "  <AppFunctionStaticMetadata>\n"
+                    + "    <id>com.appLevelSchema.utils#search</id>\n"
+                    + "    <functionId>com.appLevelSchema.utils#search</functionId>\n"
+                    + "  </AppFunctionStaticMetadata>\n"
+                    + "</appfunctions>";
+
     /**
      * Creates a fake {@link PackageInfo} object.
      *
@@ -311,6 +332,8 @@ class TestUtils {
     /**
      * Configure a mock {@link PackageManager} to return certain {@link PackageInfo}s and {@link
      * ResolveInfo}s when getInstalledPackages and queryIntentActivities are called, respectively.
+     *
+     * <p>Note: use Mockito.reset() in case you need to call this method twice for the same mock.
      */
     public static void setupMockPackageManager(
             @NonNull PackageManager pm,
@@ -329,6 +352,8 @@ class TestUtils {
         when(pm.getApplicationLabel(any())).thenReturn("label");
         when(pm.queryIntentActivities(any(), eq(0))).then(i -> activities);
         when(pm.queryIntentServices(any(), eq(0))).then(i -> appFunctionServices);
+        when(pm.getProperty(any(), anyString()))
+                .thenThrow(PackageManager.NameNotFoundException.class);
     }
 
     /**

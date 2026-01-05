@@ -16,8 +16,11 @@
 
 package com.android.server.appsearch.appsindexer;
 
+import static com.android.compatibility.common.util.ApiLevelUtil.isAtLeast;
 import static com.android.server.appsearch.appsindexer.TestUtils.APP_FUNCTION_STATIC_METADATA_PARENT_PROPERTIES;
 import static com.android.server.appsearch.appsindexer.TestUtils.APP_FUNCTION_STATIC_METADATA_PARENT_SCHEMA_XSD;
+import static com.android.server.appsearch.appsindexer.TestUtils.APP_FUNCTION_XML_WITH_PRINT;
+import static com.android.server.appsearch.appsindexer.TestUtils.APP_FUNCTION_XML_WITH_SEARCH;
 import static com.android.server.appsearch.appsindexer.TestUtils.createFakeAppFunctionResolveInfo;
 import static com.android.server.appsearch.appsindexer.TestUtils.createFakeLaunchResolveInfo;
 import static com.android.server.appsearch.appsindexer.TestUtils.createFakeMobileApplication;
@@ -32,7 +35,9 @@ import static com.google.common.truth.Truth.assertThat;
 
 import static junit.framework.Assert.assertEquals;
 
+import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
@@ -47,6 +52,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.res.AssetManager;
 import android.content.res.Resources;
+import android.os.Build;
 import android.platform.test.annotations.RequiresFlagsEnabled;
 import android.util.ArraySet;
 
@@ -243,10 +249,12 @@ public class AppsIndexerImplTest {
             fakeAppFunctionServices.add(createFakeAppFunctionResolveInfo(i));
         }
 
-        when(pm1.getProperty(any(String.class), any(ComponentName.class)))
-                .thenThrow(PackageManager.NameNotFoundException.class);
         when(pm1.getProperty(eq("android.app.appfunctions"), any(ComponentName.class)))
                 .thenReturn(new PackageManager.Property("", "app_functions.xml", "", ""));
+        when(pm1.getProperty(eq("android.app.appfunctions.schema"), any(String.class)))
+                .thenThrow(PackageManager.NameNotFoundException.class);
+        when(pm1.getProperty(eq("android.app.appfunctions.schema"), any(ComponentName.class)))
+                .thenThrow(PackageManager.NameNotFoundException.class);
         AssetManager assetManager = Mockito.mock(AssetManager.class);
         // Three functions initially. One will be deleted, another updated, the third left alone,
         // then a fourth added.
@@ -444,6 +452,8 @@ public class AppsIndexerImplTest {
         List<ResolveInfo> fakeActivities = ImmutableList.of(createFakeLaunchResolveInfo(0));
         List<ResolveInfo> fakeAppFunctionServices =
                 ImmutableList.of(createFakeAppFunctionResolveInfo(0));
+        when(pm1.getProperty(any(String.class), any(String.class)))
+                .thenThrow(PackageManager.NameNotFoundException.class);
         when(pm1.getProperty(any(String.class), any(ComponentName.class)))
                 .thenThrow(PackageManager.NameNotFoundException.class);
         when(pm1.getProperty(eq("android.app.appfunctions"), any(ComponentName.class)))
@@ -563,7 +573,9 @@ public class AppsIndexerImplTest {
         List<ResolveInfo> fakeActivities = ImmutableList.of(createFakeLaunchResolveInfo(0));
         List<ResolveInfo> fakeAppFunctionServices =
                 ImmutableList.of(createFakeAppFunctionResolveInfo(0));
-        when(pm1.getProperty(any(String.class), any(ComponentName.class)))
+        when(pm1.getProperty(eq("android.app.appfunctions.schema"), any(String.class)))
+                .thenThrow(PackageManager.NameNotFoundException.class);
+        when(pm1.getProperty(eq("android.app.appfunctions.schema"), any(ComponentName.class)))
                 .thenThrow(PackageManager.NameNotFoundException.class);
         when(pm1.getProperty(eq("android.app.appfunctions"), any(ComponentName.class)))
                 .thenReturn(new PackageManager.Property("", "app_functions.xml", "", ""));
@@ -615,6 +627,204 @@ public class AppsIndexerImplTest {
 
         assertThat(mAppSearchHelper.getAppFunctionDocumentsFromAppSearch(packages).keySet())
                 .isEmpty();
+    }
+
+    @Test
+    @RequiresFlagsEnabled({
+        Flags.FLAG_ENABLE_APP_FUNCTIONS_SCHEMA_PARSER,
+        android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS
+    })
+    public void testAppsIndexerImpl_withApplicationLevelSchema_indexesAppFunctions()
+            throws Exception {
+        assumeTrue(isAtLeast(Build.VERSION_CODES.BAKLAVA));
+        PackageManager pm1 = Mockito.mock(PackageManager.class);
+        PackageInfo app = createFakePackageInfo(0);
+        ResolveInfo appResolveInfo = createFakeLaunchResolveInfo(0);
+        ResolveInfo appFunctionResolveInfo = createFakeAppFunctionResolveInfo(0);
+        AssetManager assetManager = Mockito.mock(AssetManager.class);
+        when(assetManager.open(eq("app_function_schema.xml")))
+                .thenReturn(
+                        new ByteArrayInputStream(
+                                APP_FUNCTION_STATIC_METADATA_PARENT_SCHEMA_XSD.getBytes()));
+        when(assetManager.open(eq("app_functions.xml")))
+                .thenReturn(new ByteArrayInputStream(APP_FUNCTION_XML_WITH_PRINT.getBytes()));
+        setUpResourcesForApp(assetManager, pm1, app.packageName);
+        setupMockPackageManager(
+                pm1,
+                ImmutableList.of(app),
+                ImmutableList.of(appResolveInfo),
+                ImmutableList.of(appFunctionResolveInfo));
+        Context context1 = createContextWithPackageManager(pm1);
+        when(pm1.getProperty(eq("android.app.appfunctions.schema"), eq(app.packageName)))
+                .thenReturn(new PackageManager.Property("", "app_function_schema.xml", "", ""));
+        when(pm1.getProperty(
+                        eq("android.app.appfunctions.v2"),
+                        eq(
+                                new ComponentName(
+                                        appFunctionResolveInfo.serviceInfo.packageName,
+                                        appFunctionResolveInfo.serviceInfo.name))))
+                .thenReturn(new PackageManager.Property("", "app_functions.xml", "", ""));
+
+        try (AppsIndexerImpl appsIndexerImpl = new AppsIndexerImpl(context1, mAppsIndexerConfig)) {
+            appsIndexerImpl.doUpdateIncrementalPut(
+                    new AppsIndexerSettings(),
+                    new AppsUpdateStats(),
+                    /* isFullUpdateRequired= */ false);
+
+            Map<String, Map<String, AppFunctionDocument>> indexedFunctions =
+                    mAppSearchHelper.getAppFunctionDocumentsFromAppSearch(
+                            ImmutableSet.of(app.packageName));
+            assertThat(indexedFunctions.keySet()).containsExactly(app.packageName);
+            assertThat(indexedFunctions.get(app.packageName).keySet())
+                    .containsExactly("com.fake.package0/com.appLevelSchema.utils#print");
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled({
+        Flags.FLAG_ENABLE_APP_FUNCTIONS_SCHEMA_PARSER,
+        android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS
+    })
+    public void testAppsIndexerImpl_withApplicationLevelFunctions_indexesAppFunctions()
+            throws Exception {
+        assumeTrue(isAtLeast(Build.VERSION_CODES.BAKLAVA));
+        PackageManager pm1 = Mockito.mock(PackageManager.class);
+        PackageInfo app = createFakePackageInfo(0);
+        ResolveInfo appResolveInfo = createFakeLaunchResolveInfo(0);
+        AssetManager assetManager = Mockito.mock(AssetManager.class);
+        when(assetManager.open(eq("app_function_schema.xml")))
+                .thenReturn(
+                        new ByteArrayInputStream(
+                                APP_FUNCTION_STATIC_METADATA_PARENT_SCHEMA_XSD.getBytes()));
+        when(assetManager.open(eq("app_functions.xml")))
+                .thenReturn(new ByteArrayInputStream(APP_FUNCTION_XML_WITH_PRINT.getBytes()));
+        setUpResourcesForApp(assetManager, pm1, app.packageName);
+        setupMockPackageManager(
+                pm1, ImmutableList.of(app), ImmutableList.of(appResolveInfo), ImmutableList.of());
+        Context context1 = createContextWithPackageManager(pm1);
+        when(pm1.getProperty(eq("android.app.appfunctions.schema"), eq(app.packageName)))
+                .thenReturn(new PackageManager.Property("", "app_function_schema.xml", "", ""));
+        when(pm1.getProperty(eq("android.app.appfunctions.v2"), eq(app.packageName)))
+                .thenReturn(new PackageManager.Property("", "app_functions.xml", "", ""));
+
+        try (AppsIndexerImpl appsIndexerImpl = new AppsIndexerImpl(context1, mAppsIndexerConfig)) {
+            appsIndexerImpl.doUpdateIncrementalPut(
+                    new AppsIndexerSettings(),
+                    new AppsUpdateStats(),
+                    /* isFullUpdateRequired= */ false);
+
+            Map<String, Map<String, AppFunctionDocument>> indexedFunctions =
+                    mAppSearchHelper.getAppFunctionDocumentsFromAppSearch(
+                            ImmutableSet.of(app.packageName));
+            assertThat(indexedFunctions.keySet()).containsExactly(app.packageName);
+            assertThat(indexedFunctions.get(app.packageName).keySet())
+                    .containsExactly("com.fake.package0/com.appLevelSchema.utils#print");
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled({
+        Flags.FLAG_ENABLE_APP_FUNCTIONS_SCHEMA_PARSER,
+        android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS
+    })
+    public void testAppsIndexerImpl_withAppLevelFunctions_multipleAssets_indexesAppFunctions()
+            throws Exception {
+        assumeTrue(isAtLeast(Build.VERSION_CODES.BAKLAVA));
+        PackageManager pm1 = Mockito.mock(PackageManager.class);
+        PackageInfo app = createFakePackageInfo(0);
+        ResolveInfo appResolveInfo = createFakeLaunchResolveInfo(0);
+        AssetManager assetManager = Mockito.mock(AssetManager.class);
+        when(assetManager.open(eq("app_function_schema.xml")))
+                .thenReturn(
+                        new ByteArrayInputStream(
+                                APP_FUNCTION_STATIC_METADATA_PARENT_SCHEMA_XSD.getBytes()));
+        when(assetManager.open(eq("app_functions1.xml")))
+                .thenReturn(new ByteArrayInputStream(APP_FUNCTION_XML_WITH_PRINT.getBytes()));
+        when(assetManager.open(eq("app_functions2.xml")))
+                .thenReturn(new ByteArrayInputStream(APP_FUNCTION_XML_WITH_SEARCH.getBytes()));
+        setUpResourcesForApp(assetManager, pm1, app.packageName);
+        setupMockPackageManager(
+                pm1, ImmutableList.of(app), ImmutableList.of(appResolveInfo), ImmutableList.of());
+        Context context1 = createContextWithPackageManager(pm1);
+        when(pm1.getProperty(eq("android.app.appfunctions.schema"), eq(app.packageName)))
+                .thenReturn(new PackageManager.Property("", "app_function_schema.xml", "", ""));
+        when(pm1.getProperty(eq("android.app.appfunctions.v2"), eq(app.packageName)))
+                .thenReturn(
+                        new PackageManager.Property(
+                                "", "app_functions1.xml,app_functions2.xml", "", ""));
+
+        try (AppsIndexerImpl appsIndexerImpl = new AppsIndexerImpl(context1, mAppsIndexerConfig)) {
+            appsIndexerImpl.doUpdateIncrementalPut(
+                    new AppsIndexerSettings(),
+                    new AppsUpdateStats(),
+                    /* isFullUpdateRequired= */ false);
+
+            Map<String, Map<String, AppFunctionDocument>> indexedFunctions =
+                    mAppSearchHelper.getAppFunctionDocumentsFromAppSearch(
+                            ImmutableSet.of(app.packageName));
+            assertThat(indexedFunctions.keySet()).containsExactly(app.packageName);
+            assertThat(indexedFunctions.get(app.packageName).keySet())
+                    .containsExactly(
+                            "com.fake.package0/com.appLevelSchema.utils#print",
+                            "com.fake.package0/com.appLevelSchema.utils#search");
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled({
+        Flags.FLAG_ENABLE_APP_FUNCTIONS_SCHEMA_PARSER,
+        android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS
+    })
+    public void testAppsIndexerImpl_withAppAndServiceLevelFunctions_multipleAssets_indexesAll()
+            throws Exception {
+        assumeTrue(isAtLeast(Build.VERSION_CODES.BAKLAVA));
+        PackageManager pm1 = Mockito.mock(PackageManager.class);
+        PackageInfo app = createFakePackageInfo(0);
+        ResolveInfo appResolveInfo = createFakeLaunchResolveInfo(0);
+        ResolveInfo appFunctionResolveInfo = createFakeAppFunctionResolveInfo(0);
+        AssetManager assetManager = Mockito.mock(AssetManager.class);
+        when(assetManager.open(eq("app_function_schema.xml")))
+                .thenReturn(
+                        new ByteArrayInputStream(
+                                APP_FUNCTION_STATIC_METADATA_PARENT_SCHEMA_XSD.getBytes()));
+        when(assetManager.open(eq("app_functions1.xml")))
+                .thenReturn(new ByteArrayInputStream(APP_FUNCTION_XML_WITH_PRINT.getBytes()));
+        when(assetManager.open(eq("app_functions2.xml")))
+                .thenReturn(new ByteArrayInputStream(APP_FUNCTION_XML_WITH_SEARCH.getBytes()));
+        setUpResourcesForApp(assetManager, pm1, app.packageName);
+        setupMockPackageManager(
+                pm1,
+                ImmutableList.of(app),
+                ImmutableList.of(appResolveInfo),
+                ImmutableList.of(appFunctionResolveInfo));
+        Context context1 = createContextWithPackageManager(pm1);
+        when(pm1.getProperty(eq("android.app.appfunctions.schema"), eq(app.packageName)))
+                .thenReturn(new PackageManager.Property("", "app_function_schema.xml", "", ""));
+        when(pm1.getProperty(eq("android.app.appfunctions.v2"), eq(app.packageName)))
+                .thenReturn(new PackageManager.Property("", "app_functions1.xml", "", ""));
+        when(pm1.getProperty(
+                        eq("android.app.appfunctions.v2"),
+                        eq(
+                                new ComponentName(
+                                        appFunctionResolveInfo.serviceInfo.packageName,
+                                        appFunctionResolveInfo.serviceInfo.name))))
+                .thenReturn(new PackageManager.Property("", "app_functions2.xml", "", ""));
+
+        try (AppsIndexerImpl appsIndexerImpl = new AppsIndexerImpl(context1, mAppsIndexerConfig)) {
+            appsIndexerImpl.doUpdateIncrementalPut(
+                    new AppsIndexerSettings(),
+                    new AppsUpdateStats(),
+                    /* isFullUpdateRequired= */ false);
+
+            Map<String, Map<String, AppFunctionDocument>> indexedFunctions =
+                    mAppSearchHelper.getAppFunctionDocumentsFromAppSearch(
+                            ImmutableSet.of(app.packageName));
+            assertThat(indexedFunctions.keySet()).containsExactly(app.packageName);
+            assertThat(indexedFunctions.get(app.packageName).keySet())
+                    .containsExactly(
+                            "com.fake.package0/com.appLevelSchema.utils#print",
+                            "com.fake.package0/com.appLevelSchema.utils#search");
+        }
     }
 
     @Test
@@ -1222,6 +1432,8 @@ public class AppsIndexerImplTest {
                                         resolveInfo.serviceInfo.packageName,
                                         resolveInfo.serviceInfo.name))))
                 .thenReturn(new PackageManager.Property("", "app_function_schema.xml", "", ""));
+        when(pm.getProperty(eq("android.app.appfunctions.schema"), anyString()))
+                .thenThrow(new PackageManager.NameNotFoundException());
         when(pm.getProperty(
                         eq("android.app.appfunctions.v2"),
                         eq(
