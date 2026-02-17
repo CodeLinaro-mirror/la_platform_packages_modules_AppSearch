@@ -24,6 +24,7 @@ import android.accounts.AccountManager;
 import android.accounts.OnAccountsUpdateListener;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.AlarmManager;
 import android.app.appsearch.AppSearchEnvironmentFactory;
 import android.app.appsearch.AppSearchResult;
 import android.app.appsearch.exceptions.AppSearchException;
@@ -113,6 +114,17 @@ public final class AppSearchUserInstanceManager {
     private final @Nullable Handler mBackgroundHandler;
 
     private static final String BACKGROUND_HANDLER_THREAD_NAME = "AppSearchBackgroundThread";
+
+    /**
+     * The default delay for resetting handle expired documents alarm (via {@link
+     * HandleExpiredDocumentsAlarmListener}) during {@link AppSearchUserInstance} creation.
+     *
+     * <p>{@link AppSearchUserInstance} should schedule the 1st handle expired documents alarm after
+     * creation and initialization in order to kick off the background task cycle, and the task
+     * itself will keep rescheduling the next alarm for the next expiration time.
+     */
+    private static final long HANDLE_EXPIRED_DOCUMENTS_ALARM_RESET_AT_CREATION_DELAY_MILLIS =
+            60 * 1000; // 1 minute
 
     public AppSearchUserInstanceManager() {
         if (Flags.enableSchemasWipeoutAccountPropertyPaths()) {
@@ -460,12 +472,49 @@ public final class AppSearchUserInstanceManager {
                                 userContext, appSearchImpl, userHandle);
             }
 
-            return new AppSearchUserInstance(
-                    logger, appSearchImpl, visibilityCheckerImpl, accountManager, listener);
+            // Create alarm handler thread and HandleExpiredDocuments alarm listener.
+            HandlerThread alarmHandlerThread = null;
+            HandleExpiredDocumentsAlarmListener handleExpiredDocumentsAlarmListener = null;
+            if (Flags.enableDeletePropagationRw()) {
+                alarmHandlerThread =
+                        new HandlerThread(
+                                "AppSearchUserInstance_alarmHandlerThread_user"
+                                        + userHandle.getIdentifier());
+                alarmHandlerThread.start();
+
+                AlarmManager alarmManager =
+                        (AlarmManager)
+                                Objects.requireNonNull(
+                                        userContext.getSystemService(Context.ALARM_SERVICE));
+                handleExpiredDocumentsAlarmListener =
+                        new HandleExpiredDocumentsAlarmListener(
+                                alarmManager,
+                                new Handler(alarmHandlerThread.getLooper()),
+                                userHandle,
+                                appSearchImpl);
+            }
+
+            AppSearchUserInstance userInstance =
+                    new AppSearchUserInstance(
+                            logger,
+                            appSearchImpl,
+                            visibilityCheckerImpl,
+                            accountManager,
+                            listener,
+                            alarmHandlerThread,
+                            handleExpiredDocumentsAlarmListener);
+            if (Flags.enableDeletePropagationRw()
+                    && userInstance.getHandleExpiredDocumentsAlarmListener() != null) {
+                long triggerAtMillis =
+                        System.currentTimeMillis()
+                                + HANDLE_EXPIRED_DOCUMENTS_ALARM_RESET_AT_CREATION_DELAY_MILLIS;
+                userInstance.getHandleExpiredDocumentsAlarmListener().maybeReset(triggerAtMillis);
+            }
+            return userInstance;
         } catch (AppSearchException e) {
             AppSearchResult<Void> failedResult = throwableToFailedResult(e);
             statusCode = failedResult.getResultCode();
-            Log.wtf(TAG, "Failed to create AppSearch instance: ", e);
+            LogUtil.criticalError(TAG, "Failed to create AppSearch instance", e);
             if (Flags.enableCloseAppsearchOnCreationFailure() && appSearchImpl != null) {
                 // If we've created the instance, but encountered some issue.
                 // Close this instance so that we clean up it's resources.
@@ -473,7 +522,7 @@ public final class AppSearchUserInstanceManager {
             }
             throw e;
         } catch (Exception e) {
-            Log.wtf(TAG, "Failed to create AppSearch instance: ", e);
+            LogUtil.criticalError(TAG, "Failed to create AppSearch instance", e);
             if (Flags.enableCloseAppsearchOnCreationFailure() && appSearchImpl != null) {
                 // If we've created the instance, but encountered some issue.
                 // Close this instance so that we clean up it's resources.
@@ -606,7 +655,7 @@ public final class AppSearchUserInstanceManager {
         for (int i = 0; i < aliveAccounts.length; i++) {
             String oldName = accountManager.getPreviousName(aliveAccounts[i]);
             if (oldName != null) {
-                Account oldAccount = new Account(aliveAccounts[i].type, oldName);
+                Account oldAccount = new Account(oldName, aliveAccounts[i].type);
                 renamedAccounts.put(oldAccount, aliveAccounts[i]);
             }
             allExistingAccounts.add(aliveAccounts[i]);
@@ -713,6 +762,10 @@ public final class AppSearchUserInstanceManager {
                                 .removeOnAccountsUpdatedListener(
                                         instance.getOnAccountsUpdateListener());
                     }
+
+                    // Cancel alarms before destroying AppSearchImpl.
+                    instance.cancelAllAlarms();
+
                     AppSearchImpl appSearchImpl = instance.getAppSearchImpl();
                     if (removeUserData) {
                         appSearchImpl.clearAndDestroy();
@@ -740,6 +793,9 @@ public final class AppSearchUserInstanceManager {
             mInstanceMapLock.unlock();
         }
         if (instance != null) {
+            // Cancel alarms before destroying AppSearchImpl.
+            instance.cancelAllAlarms();
+
             if (removeUserData) {
                 instance.getAppSearchImpl().clearAndDestroy();
             } else {
@@ -886,7 +942,13 @@ public final class AppSearchUserInstanceManager {
                         .getAppSearchDir(userContext, userHandle);
         // Check whether this is the first time VM is booted after the feature is enabled.
         boolean vmFirstRun = !DataMigrationUtil.migrationStatusFileExists(userHandle, appSearchDir);
-        if (vmFirstRun && !config.getIsolatedStorageEnableUnfreezingMigration()) {
+        // Force migration to the VM if the override_isolated_storage_migration_freeze
+        // system_property is set
+        boolean overrideMigrationFreeze =
+                IsolatedStorageServiceManager.overrideIsolatedStorageMigrationFreeze();
+        if (vmFirstRun
+                && !config.getIsolatedStorageEnableUnfreezingMigration()
+                && !overrideMigrationFreeze) {
             // This device hasn't switched to IsolatedStorage yet and migrations are not unfrozen.
             // Do not migrate and just start the normal Icing.
             Log.i(
@@ -920,7 +982,8 @@ public final class AppSearchUserInstanceManager {
             DataMigrationUtil.writeMigrationStatus(appSearchDir, /* migrationStats= */ null);
         }
 
-        if (!DataMigrationUtil.needDataMigration(userContext, userHandle)) {
+        if (DataMigrationUtil.needDataMigration(userContext, userHandle)
+                == DataMigrationUtil.MIGRATION_COMPLETED) {
             // Data migration is not needed. But we still want to log an entry to
             // indicate that data migration is correctly skipped.
             if (vmFirstRun) {

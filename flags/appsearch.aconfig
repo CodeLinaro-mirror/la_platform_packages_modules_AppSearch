@@ -871,6 +871,14 @@ flag {
 }
 
 flag {
+    name: "enable_private_compute_core_uid_access"
+    namespace: "appsearch"
+    description: "Enables visibility access for Private Compute Core UIDs."
+    bug: "463863587"
+    is_exported: true
+}
+
+flag {
     name: "enable_delete_propagation_rw"
     namespace: "appsearch"
     description: "Enables delete propagation API. It replaces the original read-only flag enable_delete_propagation_type."
@@ -932,3 +940,20 @@ flag {
         purpose: PURPOSE_BUGFIX
     }
 }
+
+flag {
+    name: "enable_aiseal_isolated_storage"
+    namespace: "appsearch"
+    description: "Use AiSeal isolated storage service for storing user data."
+    bug: "465465109"
+}
+flag {
+    name: "enable_restrict_visibility_on_empty_permissions"
+    namespace: "appsearch"
+    description: "Prevents an empty set in addRequiredPermissionsForSchemaTypeVisibility from granting visibility to all packages."
+    bug: "460807276"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+

@@ -16,7 +16,9 @@
 // @exportToGMSCore:skipFile()
 package com.android.server.appsearch.visibilitystore;
 
+import static android.Manifest.permission.DISCOVER_APP_FUNCTIONS;
 import static android.Manifest.permission.EXECUTE_APP_FUNCTIONS;
+import static android.Manifest.permission.EXECUTE_APP_FUNCTIONS_SYSTEM;
 import static android.Manifest.permission.PACKAGE_USAGE_STATS;
 import static android.Manifest.permission.READ_ASSISTANT_APP_SEARCH_DATA;
 import static android.Manifest.permission.READ_CALENDAR;
@@ -30,6 +32,7 @@ import static android.permission.PermissionManager.PERMISSION_GRANTED;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresApi;
+import android.annotation.SuppressLint;
 import android.app.appfunctions.AppFunctionManager;
 import android.app.appsearch.InternalVisibilityConfig;
 import android.app.appsearch.PackageIdentifier;
@@ -40,6 +43,7 @@ import android.content.AttributionSource;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Build;
+import android.os.Process;
 import android.os.UserHandle;
 import android.permission.PermissionManager;
 
@@ -67,6 +71,14 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
     private final PolicyChecker mPolicyChecker;
 
     private final AppFunctionCompat mAppFunctionCompat;
+
+    @SuppressLint("NewApi")
+    private static final String DISCOVER_APP_FUNCTIONS_PERMISSION =
+            DISCOVER_APP_FUNCTIONS;
+
+    @SuppressLint("NewApi")
+    private static final String EXECUTE_APP_FUNCTIONS_SYSTEM_PERMISSION =
+            EXECUTE_APP_FUNCTIONS_SYSTEM;
 
     public VisibilityCheckerImpl(@NonNull Context userContext) {
         this(userContext, new PolicyCheckerImpl(userContext));
@@ -119,8 +131,10 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
             Set<SchemaVisibilityConfig> visibleToConfigs =
                     internalVisibilityConfig.getVisibleToConfigs();
             for (SchemaVisibilityConfig visibleToConfig : visibleToConfigs) {
-                if (checkMatchAllVisibilityConfig(frameworkCallerAccess,
-                        visibleToConfig, /* checkEnterpriseAccess= */ true)) {
+                if (checkMatchAllVisibilityConfig(
+                        frameworkCallerAccess,
+                        visibleToConfig,
+                        /* checkEnterpriseAccess= */ true)) {
                     return true;
                 }
             }
@@ -152,8 +166,8 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
         Set<SchemaVisibilityConfig> visibleToConfigs =
                 internalVisibilityConfig.getVisibleToConfigs();
         for (SchemaVisibilityConfig visibleToConfig : visibleToConfigs) {
-            if (checkMatchAllVisibilityConfig(frameworkCallerAccess,
-                    visibleToConfig, /* checkEnterpriseAccess= */ false)) {
+            if (checkMatchAllVisibilityConfig(
+                    frameworkCallerAccess, visibleToConfig, /* checkEnterpriseAccess= */ false)) {
                 return true;
             }
         }
@@ -322,6 +336,7 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
         for (Set<Integer> allRequiredPermissions : visibleToPermissions) {
             // User may set multiple required permission sets. Provider need to hold ALL required
             // permission of ANY of the individual value sets.
+
             if (doesCallerHoldsAllRequiredPermissions(
                     allRequiredPermissions, callerAttributionSource, checkEnterpriseAccess)) {
                 // The calling package has all required permissions in this set, return true.
@@ -337,6 +352,12 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
             @NonNull Set<Integer> allRequiredPermissions,
             @NonNull AppSearchAttributionSource callerAttributionSource,
             boolean checkEnterpriseAccess) {
+        if (Flags.enableRestrictVisibilityOnEmptyPermissions()
+                && allRequiredPermissions.isEmpty()) {
+            // An empty set of required permissions does not grant access.
+            return false;
+        }
+
         // A permissions set with ENTERPRISE_ACCESS should only be checked by enterprise calls,
         // and enterprise calls should only check permission sets with ENTERPRISE_ACCESS
         boolean isEnterprisePermissionsSet =
@@ -354,6 +375,8 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
                 case SetSchemaRequest.READ_HOME_APP_SEARCH_DATA:
                 case SetSchemaRequest.READ_ASSISTANT_APP_SEARCH_DATA:
                 case SetSchemaRequest.PACKAGE_USAGE_STATS:
+                case SetSchemaRequest.DISCOVER_APP_FUNCTIONS:
+                case SetSchemaRequest.EXECUTE_APP_FUNCTIONS_SYSTEM:
                     if (!doesCallerHavePermissionForDataDelivery(
                             requiredPermission, callerAttributionSource)) {
                         // The calling package doesn't have this required permission, return false.
@@ -388,6 +411,11 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
                 case SetSchemaRequest.ENTERPRISE_ACCESS:
                     // This permission is not an actual permission; it marks the permission set as
                     // enterprise and is checked at the top of this method so just skip it here
+                    break;
+                case SetSchemaRequest.PRIVATE_COMPUTE_CORE_UID_ACCESS:
+                    if (!isPrivateComputeCoreUid(callerAttributionSource.getUid())) {
+                        return false;
+                    }
                     break;
                 default:
                     throw new UnsupportedOperationException(
@@ -436,6 +464,20 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
             case SetSchemaRequest.PACKAGE_USAGE_STATS:
                 permission = PACKAGE_USAGE_STATS;
                 break;
+            case SetSchemaRequest.DISCOVER_APP_FUNCTIONS:
+                if (!android.app.appfunctions.flags.Flags.enableAppFunctionPermissionV2()) {
+                    // Returning false as is this permission does not exist.
+                    return false;
+                }
+                permission = DISCOVER_APP_FUNCTIONS_PERMISSION;
+                break;
+            case SetSchemaRequest.EXECUTE_APP_FUNCTIONS_SYSTEM:
+                if (!android.app.appfunctions.flags.Flags.enableAppFunctionPermissionV2()) {
+                    // Returning false as is this permission does not exist.
+                    return false;
+                }
+                permission = EXECUTE_APP_FUNCTIONS_SYSTEM_PERMISSION;
+                break;
             case SetSchemaRequest.EXECUTE_APP_FUNCTIONS_TRUSTED:
                 // Deprecated. Returning false as is this permission does not exist.
                 return false;
@@ -477,6 +519,15 @@ public class VisibilityCheckerImpl implements VisibilityChecker {
                         .getPackageManager()
                         .checkPermission(READ_GLOBAL_APP_SEARCH_DATA, callerPackageName)
                 == PackageManager.PERMISSION_GRANTED;
+    }
+
+    @Override
+    public boolean isPrivateComputeCoreUid(int uid) {
+        if (Flags.enablePrivateComputeCoreUidAccess()
+                && android.app.privatecompute.flags.Flags.enablePccFrameworkSupport()) {
+            return Process.isPrivateComputeCoreUid(uid);
+        }
+        return false;
     }
 
     /**

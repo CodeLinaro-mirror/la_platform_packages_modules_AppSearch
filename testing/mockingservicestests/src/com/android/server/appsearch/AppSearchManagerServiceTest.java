@@ -36,19 +36,26 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.Manifest;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.AlarmManager;
 import android.app.UiAutomation;
 import android.app.admin.DevicePolicyManager;
 import android.app.appsearch.AppSearchBatchResult;
@@ -103,6 +110,7 @@ import android.app.appsearch.safeparcel.GenericDocumentParcel;
 import android.app.appsearch.stats.SchemaMigrationStats;
 import android.app.appsearch.testutil.AppSearchTestUtils;
 import android.app.role.RoleManager;
+import android.app.test.TestAlarmManager;
 import android.content.AttributionSource;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -110,6 +118,7 @@ import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.ParcelFileDescriptor;
@@ -127,6 +136,9 @@ import com.android.appsearch.flags.Flags;
 import com.android.modules.utils.testing.ExtendedMockitoRule;
 import com.android.modules.utils.testing.TestableDeviceConfig;
 import com.android.server.appsearch.ServiceTestUtil.MockServiceManager;
+import com.android.server.appsearch.contactsindexer.AppSearchHelper;
+import com.android.server.appsearch.contactsindexer.appsearchtypes.ContactPoint;
+import com.android.server.appsearch.contactsindexer.appsearchtypes.Person;
 import com.android.server.appsearch.external.localstorage.stats.CallStats;
 import com.android.server.appsearch.external.localstorage.stats.QueryStats;
 import com.android.server.appsearch.external.localstorage.stats.SearchIntentStats;
@@ -169,6 +181,7 @@ public class AppSearchManagerServiceTest {
     private final MockServiceManager mMockServiceManager = new MockServiceManager();
     private final RoleManager mRoleManager = mock(RoleManager.class);
     private final DevicePolicyManager mDevicePolicyManager = mock(DevicePolicyManager.class);
+    private TestAlarmManager mAlarmManager;
 
     @Rule public final RuleChain mRuleChain = AppSearchTestUtils.createCommonTestRules();
 
@@ -196,10 +209,15 @@ public class AppSearchManagerServiceTest {
         Context context = ApplicationProvider.getApplicationContext();
         mUserHandle = context.getUser();
         mUiAutomation = InstrumentationRegistry.getInstrumentation().getUiAutomation();
+        mAlarmManager = new TestAlarmManager();
         final boolean isIsolatedStorageAvailable = false;
         mContext =
                 new TestContext(
-                        context, mRoleManager, mDevicePolicyManager, isIsolatedStorageAvailable);
+                        context,
+                        mRoleManager,
+                        mDevicePolicyManager,
+                        mAlarmManager.getAlarmManager(),
+                        isIsolatedStorageAvailable);
 
         // Set a test environment that provides a temporary folder for AppSearch
         File mAppSearchDir = mTemporaryFolder.newFolder();
@@ -1512,6 +1530,74 @@ public class AppSearchManagerServiceTest {
     }
 
     @Test
+    public void testEnterpriseGetDocumentsInSystemPackage_transformsPerson() throws Exception {
+        // Set Person schema
+        List<AppSearchSchema> schemas = Arrays.asList(Person.getSchema(), ContactPoint.SCHEMA);
+        InternalSetSchemaResponse internalSetSchemaResponse =
+                mUserInstance
+                        .getAppSearchImpl()
+                        .setSchema(
+                                mContext.getPackageName(),
+                                AppSearchHelper.DATABASE_NAME,
+                                schemas,
+                                /* visibilityDocuments= */ Collections.emptyList(),
+                                /* accountPropertyPaths= */ Collections.emptyMap(),
+                                /* forceOverride= */ false,
+                                /* version= */ 0,
+                                /* setSchemaStatsBuilder= */ null,
+                                /* callStatsBuilder= */ null);
+        assertThat(internalSetSchemaResponse.isSuccess()).isTrue();
+
+        final String id = "1";
+        Person person = new Person.Builder(AppSearchHelper.NAMESPACE_NAME, id,
+                "Test Contact").setExternalUri(
+                Uri.parse("content://com.android.contacts/contacts/lookup/key/1")).setImageUri(
+                Uri.parse("imageUri")).setCreationTimestampMillis(123).build();
+        List<GenericDocumentParcel> genericDocumentParcels =
+                Arrays.asList(GenericDocumentParcel.fromGenericDocument(person));
+
+        TestBatchResultErrorCallback callback = new TestBatchResultErrorCallback();
+        mAppSearchManagerServiceStub.putDocuments(
+                new PutDocumentsAidlRequest(
+                        AppSearchAttributionSource.createAttributionSource(mContext, mCallingPid),
+                        AppSearchHelper.DATABASE_NAME,
+                        new DocumentsParcel(
+                                Collections.emptyList(), genericDocumentParcels),
+                        mUserHandle,
+                        BINDER_CALL_START_TIME),
+                callback);
+        assertThat(callback.get()).isNull(); // null means there wasn't an error
+
+        callback = new TestBatchResultErrorCallback();
+        GetDocumentsAidlRequest request = spy(new GetDocumentsAidlRequest(
+                AppSearchAttributionSource.createAttributionSource(mContext, mCallingPid),
+                mContext.getPackageName(), AppSearchHelper.DATABASE_NAME,
+                new GetByDocumentIdRequest.Builder(AppSearchHelper.NAMESPACE_NAME).addIds(/* ids= */
+                        Arrays.asList(id)).build(), mUserHandle,
+                BINDER_CALL_START_TIME, /* isForEnterprise= */ false));
+        // Pretend to be an enterprise request after getUserToQuery and isGlobalCall
+        when(request.isForEnterprise()).thenCallRealMethod().thenCallRealMethod().thenReturn(true);
+        // Pretend to be for the "android" package after isGlobalCall and batchGetDocuments
+        when(request.getTargetPackageName()).thenCallRealMethod().thenCallRealMethod().thenReturn(
+                "android");
+        mAppSearchManagerServiceStub.getDocuments(request, callback);
+        assertThat(callback.get()).isNull(); // null means there wasn't an error
+        AppSearchBatchResult<String, GenericDocumentParcel> batchResult =
+                (AppSearchBatchResult<String, GenericDocumentParcel>) callback.getBatchResult();
+        assertThat(batchResult.isSuccess()).isTrue();
+        Person expectedPerson =
+                new Person.Builder(AppSearchHelper.NAMESPACE_NAME, id, "Test Contact")
+                        .setExternalUri(Uri.parse(
+                                "content://com.android.contacts/contacts/lookup/c-key/1000000001"))
+                        .setImageUri(Uri.parse(
+                                "content://com.android.contacts/contacts_corp/1/photo"))
+                        .setCreationTimestampMillis(123)
+                        .build();
+        assertThat(batchResult.getSuccesses().get(id)).isEqualTo(
+                GenericDocumentParcel.fromGenericDocument(expectedPerson));
+    }
+
+    @Test
     public void testIsolatedStorageNotAvailable() throws Exception {
         Context context = ApplicationProvider.getApplicationContext();
         ServiceAppSearchConfig appSearchConfig =
@@ -1543,6 +1629,7 @@ public class AppSearchManagerServiceTest {
                         context,
                         mRoleManager,
                         mDevicePolicyManager,
+                        mAlarmManager.getAlarmManager(),
                         /* isIsolatedStorageAvailable= */ true);
         assertThrows(
                 AppSearchException.class,
@@ -1584,6 +1671,120 @@ public class AppSearchManagerServiceTest {
         // Verify write executor was used
         verify(writeExecutorSpy, atLeastOnce()).execute(any());
         verify(readExecutorSpy, never()).execute(any());
+    }
+
+    @RequiresFlagsEnabled(Flags.FLAG_ENABLE_DELETE_PROPAGATION_RW)
+    @Test
+    public void testPutDocuments_resetsHandleExpiredDocumentsAlarm() throws Exception {
+        setUpTestSchema(mContext.getPackageName(), DATABASE_NAME);
+
+        long currentTimeMillis = System.currentTimeMillis();
+        GenericDocument doc1 =
+                new GenericDocument.Builder<>("namespace", "id1", "type")
+                        .setCreationTimestampMillis(currentTimeMillis)
+                        .setTtlMillis(100000)
+                        .build();
+        GenericDocument doc2 =
+                new GenericDocument.Builder<>("namespace", "id2", "type")
+                        .setCreationTimestampMillis(currentTimeMillis)
+                        .setTtlMillis(50000)
+                        .build();
+        GenericDocument doc3 =
+                new GenericDocument.Builder<>("namespace", "id3", "type")
+                        .setCreationTimestampMillis(currentTimeMillis)
+                        .setTtlMillis(200000)
+                        .build();
+        TestBatchResultErrorCallback callback1 = new TestBatchResultErrorCallback();
+        mAppSearchManagerServiceStub.putDocuments(
+                new PutDocumentsAidlRequest(
+                        AppSearchAttributionSource.createAttributionSource(mContext, mCallingPid),
+                        DATABASE_NAME,
+                        new DocumentsParcel(
+                                Arrays.asList(
+                                        GenericDocumentParcel.fromGenericDocument(doc1),
+                                        GenericDocumentParcel.fromGenericDocument(doc2),
+                                        GenericDocumentParcel.fromGenericDocument(doc3)),
+                                Collections.emptyList()),
+                        mUserHandle,
+                        BINDER_CALL_START_TIME),
+                callback1);
+
+        // No error.
+        assertThat(callback1.get()).isNull();
+        // Verify handle expired documents alarm was reset with the desired timestamp.
+        verify(mAlarmManager.getAlarmManager(), times(1))
+                .set(
+                        eq(AlarmManager.RTC),
+                        eq(currentTimeMillis + 50000),
+                        eq("handleExpiredDocumentsAlarm_user" + mUserHandle.getIdentifier()),
+                        any(AlarmManager.OnAlarmListener.class),
+                        any(Handler.class));
+        reset(mAlarmManager.getAlarmManager());
+
+        // Add another document with larger expiration timestamp. Alarm should not be reset.
+        GenericDocument doc4 =
+                new GenericDocument.Builder<>("namespace", "id4", "type")
+                        .setCreationTimestampMillis(currentTimeMillis)
+                        .setTtlMillis(200000)
+                        .build();
+        TestBatchResultErrorCallback callback2 = new TestBatchResultErrorCallback();
+        mAppSearchManagerServiceStub.putDocuments(
+                new PutDocumentsAidlRequest(
+                        AppSearchAttributionSource.createAttributionSource(mContext, mCallingPid),
+                        DATABASE_NAME,
+                        new DocumentsParcel(
+                                Collections.singletonList(
+                                        GenericDocumentParcel.fromGenericDocument(doc4)),
+                                Collections.emptyList()),
+                        mUserHandle,
+                        BINDER_CALL_START_TIME),
+                callback2);
+
+        // No error.
+        assertThat(callback2.get()).isNull();
+        // Verify handle expired documents alarm was not reset.
+        verify(mAlarmManager.getAlarmManager(), never())
+                .cancel(any(AlarmManager.OnAlarmListener.class));
+        verify(mAlarmManager.getAlarmManager(), never())
+                .set(
+                        anyInt(),
+                        anyLong(),
+                        anyString(),
+                        any(AlarmManager.OnAlarmListener.class),
+                        any(Handler.class));
+        reset(mAlarmManager.getAlarmManager());
+
+        // Add another document with smaller expiration timestamp. Alarm should be reset.
+        GenericDocument doc5 =
+                new GenericDocument.Builder<>("namespace", "id5", "type")
+                        .setCreationTimestampMillis(currentTimeMillis)
+                        .setTtlMillis(20000)
+                        .build();
+        TestBatchResultErrorCallback callback3 = new TestBatchResultErrorCallback();
+        mAppSearchManagerServiceStub.putDocuments(
+                new PutDocumentsAidlRequest(
+                        AppSearchAttributionSource.createAttributionSource(mContext, mCallingPid),
+                        DATABASE_NAME,
+                        new DocumentsParcel(
+                                Collections.singletonList(
+                                        GenericDocumentParcel.fromGenericDocument(doc5)),
+                                Collections.emptyList()),
+                        mUserHandle,
+                        BINDER_CALL_START_TIME),
+                callback3);
+
+        // No error.
+        assertThat(callback3.get()).isNull();
+        // Verify handle expired documents alarm was not reset.
+        verify(mAlarmManager.getAlarmManager(), times(1))
+                .cancel(any(AlarmManager.OnAlarmListener.class));
+        verify(mAlarmManager.getAlarmManager(), times(1))
+                .set(
+                        eq(AlarmManager.RTC),
+                        eq(currentTimeMillis + 20000),
+                        eq("handleExpiredDocumentsAlarm_user" + mUserHandle.getIdentifier()),
+                        any(AlarmManager.OnAlarmListener.class),
+                        any(Handler.class));
     }
 
     @RequiresFlagsEnabled(Flags.FLAG_ENABLE_SEPARATE_READ_WRITE_EXECUTORS)
@@ -2134,6 +2335,7 @@ public class AppSearchManagerServiceTest {
     private static final class TestContext extends ContextWrapper {
         private final RoleManager mRoleManager;
         private final DevicePolicyManager mDevicePolicyManager;
+        private final AlarmManager mAlarmManager;
         private final boolean isIsolatedStorageAvailable;
 
         @Nullable private PackageManager mPackageManager;
@@ -2143,10 +2345,12 @@ public class AppSearchManagerServiceTest {
                 Context base,
                 RoleManager roleManager,
                 DevicePolicyManager devicePolicyManager,
+                AlarmManager alarmManager,
                 boolean isIsolatedStorageAvailable) {
             super(base);
             mRoleManager = roleManager;
             mDevicePolicyManager = devicePolicyManager;
+            mAlarmManager = alarmManager;
             this.isIsolatedStorageAvailable = isIsolatedStorageAvailable;
         }
 
@@ -2195,6 +2399,9 @@ public class AppSearchManagerServiceTest {
             }
             if (Context.DEVICE_POLICY_SERVICE.equals(name)) {
                 return mDevicePolicyManager;
+            }
+            if (Context.ALARM_SERVICE.equals(name)) {
+                return mAlarmManager;
             }
             /* TODO (b/399479359)
              * Force use of native icing for AppSearchManagerServiceTests, which mocks

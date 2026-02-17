@@ -16,7 +16,9 @@
 
 package com.android.server.appsearch.visibilitystore;
 
+import static android.Manifest.permission.DISCOVER_APP_FUNCTIONS;
 import static android.Manifest.permission.EXECUTE_APP_FUNCTIONS;
+import static android.Manifest.permission.EXECUTE_APP_FUNCTIONS_SYSTEM;
 import static android.Manifest.permission.PACKAGE_USAGE_STATS;
 import static android.Manifest.permission.READ_ASSISTANT_APP_SEARCH_DATA;
 import static android.Manifest.permission.READ_CALENDAR;
@@ -29,6 +31,7 @@ import static android.content.pm.PackageManager.PERMISSION_DENIED;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 
 import static com.android.appsearch.flags.Flags.FLAG_ENABLE_APP_FUNCTION_AGENT_ALLOWLIST_CHECK;
+import static com.android.appsearch.flags.Flags.FLAG_ENABLE_RESTRICT_VISIBILITY_ON_EMPTY_PERMISSIONS;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -39,6 +42,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.when;
 
 import android.annotation.NonNull;
+import android.annotation.SuppressLint;
 import android.app.UiAutomation;
 import android.app.appsearch.InternalVisibilityConfig;
 import android.app.appsearch.PackageIdentifier;
@@ -50,6 +54,7 @@ import android.app.appsearch.testutil.FakeAppSearchConfig;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.pm.PackageManager;
+import android.os.Process;
 import android.os.UserHandle;
 import android.platform.test.annotations.RequiresFlagsDisabled;
 import android.platform.test.annotations.RequiresFlagsEnabled;
@@ -84,12 +89,23 @@ public class VisibilityCheckerImplTest {
      */
     private static final OptimizeStrategy ALWAYS_OPTIMIZE = optimizeInfo -> true;
 
+    @SuppressLint("NewApi")
+    private static final String DISCOVER_APP_FUNCTIONS_PERMISSION =
+            DISCOVER_APP_FUNCTIONS;
+
+    @SuppressLint("NewApi")
+    private static final String EXECUTE_APP_FUNCTIONS_SYSTEM_PERMISSION =
+            EXECUTE_APP_FUNCTIONS_SYSTEM;
+
     // These constants are hidden in SetSchemaRequest
     private static final int ENTERPRISE_ACCESS = 7;
     private static final int MANAGED_PROFILE_CONTACTS_ACCESS = 8;
     private static final int SET_SCHEMA_REQUEST_EXECUTE_APP_FUNCTIONS = 9;
     private static final int SET_SCHEMA_REQUEST_EXECUTE_APP_FUNCTIONS_TRUSTED = 10;
     private static final int SET_SCHEMA_REQUEST_PACKAGE_USAGE_STATS = 11;
+    private static final int PRIVATE_COMPUTE_CORE_UID_ACCESS = 12;
+    private static final int SET_SCHEMA_REQUEST_DISCOVER_APP_FUNCTIONS = 13;
+    private static final int SET_SCHEMA_REQUEST_EXECUTE_APP_FUNCTIONS_SYSTEM = 14;
 
     @Rule public final RuleChain mRuleChain = AppSearchTestUtils.createCommonTestRules();
 
@@ -639,6 +655,53 @@ public class VisibilityCheckerImplTest {
     }
 
     @Test
+    @RequiresFlagsEnabled(FLAG_ENABLE_RESTRICT_VISIBILITY_ON_EMPTY_PERMISSIONS)
+    public void testSetSchema_visibleToPermissions_emptySet() throws Exception {
+        String prefix = PrefixUtil.createPrefix("package", "database");
+
+        InternalVisibilityConfig visibilityConfig =
+                new InternalVisibilityConfig.Builder(/* id= */ prefix + "Schema")
+                        .addVisibleToPermissions(ImmutableSet.of())
+                        .build();
+        mVisibilityStore.setVisibility(
+                ImmutableList.of(visibilityConfig), /* callStatsBuilder= */ null);
+
+        assertThat(
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        mAttributionSource,
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
+                .isFalse();
+    }
+
+    @Test
+    @RequiresFlagsDisabled(FLAG_ENABLE_RESTRICT_VISIBILITY_ON_EMPTY_PERMISSIONS)
+    public void testSetSchema_visibleToPermissions_emptySet_disableFlag() throws Exception {
+        String prefix = PrefixUtil.createPrefix("package", "database");
+        InternalVisibilityConfig visibilityConfig =
+                new InternalVisibilityConfig.Builder(/* id= */ prefix + "Schema")
+                        .addVisibleToPermissions(ImmutableSet.of())
+                        .build();
+        mVisibilityStore.setVisibility(
+                ImmutableList.of(visibilityConfig), /* callStatsBuilder= */ null);
+
+        assertThat(
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        mAttributionSource,
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
+                .isTrue();
+    }
+
+    @Test
     @RequiresFlagsDisabled(FLAG_ENABLE_APP_FUNCTION_AGENT_ALLOWLIST_CHECK)
     public void testSetSchema_visibleToAppFunctionsPermissions() throws Exception {
         String prefix = PrefixUtil.createPrefix("package", "database");
@@ -814,6 +877,114 @@ public class VisibilityCheckerImplTest {
                         mVisibilityChecker.isSchemaSearchableByCaller(
                                 new FrameworkCallerAccess(
                                         mAttributionSource,
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
+                .isFalse();
+    }
+
+    @Test
+    public void testSetSchema_visibleToPrivateComputeCoreUid() throws Exception {
+        String prefix = PrefixUtil.createPrefix("package", "database");
+
+        // Create a doc that requires PRIVATE_COMPUTE_CORE_UID_ACCESS permission.
+        InternalVisibilityConfig visibilityConfig =
+                new InternalVisibilityConfig.Builder(/* id= */ prefix + "Schema")
+                        .addVisibleToPermissions(ImmutableSet.of(PRIVATE_COMPUTE_CORE_UID_ACCESS))
+                        .build();
+        mVisibilityStore.setVisibility(
+                ImmutableList.of(visibilityConfig), /* callStatsBuilder= */ null);
+
+        // Caller is a PCC UID, should have access.
+        int pccUid = Process.FIRST_PCC_UID;
+        doReturn(true).when(mVisibilityChecker).isPrivateComputeCoreUid(pccUid);
+        assertThat(
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        new AppSearchAttributionSource(
+                                                "package", pccUid, /* callingPid= */ 1),
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
+                .isTrue();
+
+        // Caller is NOT a PCC UID, should NOT have access.
+        int nonPccUid = 1000;
+        doReturn(false).when(mVisibilityChecker).isPrivateComputeCoreUid(nonPccUid);
+        assertThat(
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        new AppSearchAttributionSource(
+                                                "package", nonPccUid, /* callingPid= */ 1),
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
+                .isFalse();
+    }
+
+    @Test
+    public void testSetSchema_visibleToPrivateComputeCoreUidAndReadSms() throws Exception {
+        String prefix = PrefixUtil.createPrefix("package", "database");
+
+        // Create a doc that requires BOTH PRIVATE_COMPUTE_CORE_UID_ACCESS and READ_SMS.
+        InternalVisibilityConfig visibilityConfig =
+                new InternalVisibilityConfig.Builder(/* id= */ prefix + "Schema")
+                        .addVisibleToPermissions(
+                                ImmutableSet.of(
+                                        PRIVATE_COMPUTE_CORE_UID_ACCESS, SetSchemaRequest.READ_SMS))
+                        .build();
+        mVisibilityStore.setVisibility(
+                ImmutableList.of(visibilityConfig), /* callStatsBuilder= */ null);
+
+        int pccUid = Process.FIRST_PCC_UID;
+        doReturn(true).when(mVisibilityChecker).isPrivateComputeCoreUid(pccUid);
+
+        // Caller is a PCC UID but doesn't have READ_SMS, should NOT have access.
+        doReturn(false)
+                .when(mVisibilityChecker)
+                .checkPermissionForDataDeliveryGranted(eq(READ_SMS), any(), any());
+        assertThat(
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        new AppSearchAttributionSource(
+                                                "package", pccUid, /* callingPid= */ 1),
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
+                .isFalse();
+
+        // Caller is a PCC UID and has READ_SMS, should have access.
+        doReturn(true)
+                .when(mVisibilityChecker)
+                .checkPermissionForDataDeliveryGranted(eq(READ_SMS), any(), any());
+        assertThat(
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        new AppSearchAttributionSource(
+                                                "package", pccUid, /* callingPid= */ 1),
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
+                .isTrue();
+
+        // Caller has READ_SMS but is NOT a PCC UID, should NOT have access.
+        int nonPccUid = 1000;
+        doReturn(false).when(mVisibilityChecker).isPrivateComputeCoreUid(nonPccUid);
+        assertThat(
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        new AppSearchAttributionSource(
+                                                "package", nonPccUid, /* callingPid= */ 1),
                                         /* callerHasSystemAccess= */ false,
                                         /* isForEnterprise= */ false),
                                 "package",
@@ -1252,10 +1423,10 @@ public class VisibilityCheckerImplTest {
 
         // Create a VDoc which requires both READ_SMS and access to packageFoo
         SchemaVisibilityConfig visibleToConfig =
-                new SchemaVisibilityConfig.Builder().addAllowedPackage(
-                                new PackageIdentifier(packageNameFoo, sha256CertFoo))
-                        .addRequiredPermissions(ImmutableSet.of(
-                                SetSchemaRequest.READ_SMS)).build();
+                new SchemaVisibilityConfig.Builder()
+                        .addAllowedPackage(new PackageIdentifier(packageNameFoo, sha256CertFoo))
+                        .addRequiredPermissions(ImmutableSet.of(SetSchemaRequest.READ_SMS))
+                        .build();
         InternalVisibilityConfig visibilityConfig =
                 new InternalVisibilityConfig.Builder(/* id= */ prefix + "Schema")
                         .addVisibleToConfig(visibleToConfig)
@@ -1267,17 +1438,17 @@ public class VisibilityCheckerImplTest {
         try {
             // Only has READ_SMS won't have access.
             when(mockPackageManager.hasSigningCertificate(
-                    packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
+                            packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
                     .thenReturn(false);
             assertThat(
-                    mVisibilityChecker.isSchemaSearchableByCaller(
-                            new FrameworkCallerAccess(
-                                    mAttributionSource,
-                                    /* callerHasSystemAccess= */ false,
-                                    /* isForEnterprise= */ false),
-                            "package",
-                            prefix + "Schema",
-                            mVisibilityStore))
+                            mVisibilityChecker.isSchemaSearchableByCaller(
+                                    new FrameworkCallerAccess(
+                                            mAttributionSource,
+                                            /* callerHasSystemAccess= */ false,
+                                            /* isForEnterprise= */ false),
+                                    "package",
+                                    prefix + "Schema",
+                                    mVisibilityStore))
                     .isFalse();
         } finally {
             mUiAutomation.dropShellPermissionIdentity();
@@ -1285,34 +1456,34 @@ public class VisibilityCheckerImplTest {
 
         // Only has access to packageFoo won't have access
         when(mockPackageManager.hasSigningCertificate(
-                packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
+                        packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
                 .thenReturn(true);
         assertThat(
-                mVisibilityChecker.isSchemaSearchableByCaller(
-                        new FrameworkCallerAccess(
-                                mAttributionSource,
-                                /* callerHasSystemAccess= */ false,
-                                /* isForEnterprise= */ false),
-                        "package",
-                        prefix + "Schema",
-                        mVisibilityStore))
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        mAttributionSource,
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
                 .isFalse();
 
         mUiAutomation.adoptShellPermissionIdentity(READ_SMS);
         try {
             // has both READ_SMS and access to packageFoo will have access.
             when(mockPackageManager.hasSigningCertificate(
-                    packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
+                            packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
                     .thenReturn(true);
             assertThat(
-                    mVisibilityChecker.isSchemaSearchableByCaller(
-                            new FrameworkCallerAccess(
-                                    mAttributionSource,
-                                    /* callerHasSystemAccess= */ false,
-                                    /* isForEnterprise= */ false),
-                            "package",
-                            prefix + "Schema",
-                            mVisibilityStore))
+                            mVisibilityChecker.isSchemaSearchableByCaller(
+                                    new FrameworkCallerAccess(
+                                            mAttributionSource,
+                                            /* callerHasSystemAccess= */ false,
+                                            /* isForEnterprise= */ false),
+                                    "package",
+                                    prefix + "Schema",
+                                    mVisibilityStore))
                     .isTrue();
         } finally {
             mUiAutomation.dropShellPermissionIdentity();
@@ -1334,10 +1505,10 @@ public class VisibilityCheckerImplTest {
 
         // Create a VDoc which requires both ENTERPRISE_ACCESS and access to packageFoo
         SchemaVisibilityConfig visibleToConfig =
-                new SchemaVisibilityConfig.Builder().addAllowedPackage(
-                        new PackageIdentifier(packageNameFoo,
-                                sha256CertFoo)).addRequiredPermissions(
-                        ImmutableSet.of(ENTERPRISE_ACCESS)).build();
+                new SchemaVisibilityConfig.Builder()
+                        .addAllowedPackage(new PackageIdentifier(packageNameFoo, sha256CertFoo))
+                        .addRequiredPermissions(ImmutableSet.of(ENTERPRISE_ACCESS))
+                        .build();
         InternalVisibilityConfig visibilityConfig =
                 new InternalVisibilityConfig.Builder(/* id= */ prefix + "Schema")
                         .addVisibleToConfig(visibleToConfig)
@@ -1347,47 +1518,47 @@ public class VisibilityCheckerImplTest {
 
         // Only enterprise call won't have access.
         when(mockPackageManager.hasSigningCertificate(
-                packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
+                        packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
                 .thenReturn(false);
         assertThat(
-                mVisibilityChecker.isSchemaSearchableByCaller(
-                        new FrameworkCallerAccess(
-                                mAttributionSource,
-                                /* callerHasSystemAccess= */ false,
-                                /* isForEnterprise= */ true),
-                        "package",
-                        prefix + "Schema",
-                        mVisibilityStore))
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        mAttributionSource,
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ true),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
                 .isFalse();
 
         // Only has access to packageFoo won't have access
         when(mockPackageManager.hasSigningCertificate(
-                packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
+                        packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
                 .thenReturn(true);
         assertThat(
-                mVisibilityChecker.isSchemaSearchableByCaller(
-                        new FrameworkCallerAccess(
-                                mAttributionSource,
-                                /* callerHasSystemAccess= */ false,
-                                /* isForEnterprise= */ false),
-                        "package",
-                        prefix + "Schema",
-                        mVisibilityStore))
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        mAttributionSource,
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
                 .isFalse();
 
         // both enterprise call and has access to packageFoo will have access.
         when(mockPackageManager.hasSigningCertificate(
-                packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
+                        packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
                 .thenReturn(true);
         assertThat(
-                mVisibilityChecker.isSchemaSearchableByCaller(
-                        new FrameworkCallerAccess(
-                                mAttributionSource,
-                                /* callerHasSystemAccess= */ false,
-                                /* isForEnterprise= */ true),
-                        "package",
-                        prefix + "Schema",
-                        mVisibilityStore))
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        mAttributionSource,
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ true),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
                 .isTrue();
     }
 
@@ -1406,11 +1577,11 @@ public class VisibilityCheckerImplTest {
 
         // Create a VDoc which requires both ENTERPRISE_ACCESS and access to packageFoo
         SchemaVisibilityConfig visibleToConfig =
-                new SchemaVisibilityConfig.Builder().addAllowedPackage(
-                        new PackageIdentifier(packageNameFoo,
-                                sha256CertFoo)).addRequiredPermissions(
-                        ImmutableSet.of(ENTERPRISE_ACCESS)).addRequiredPermissions(
-                        ImmutableSet.of(SetSchemaRequest.READ_SMS)).build();
+                new SchemaVisibilityConfig.Builder()
+                        .addAllowedPackage(new PackageIdentifier(packageNameFoo, sha256CertFoo))
+                        .addRequiredPermissions(ImmutableSet.of(ENTERPRISE_ACCESS))
+                        .addRequiredPermissions(ImmutableSet.of(SetSchemaRequest.READ_SMS))
+                        .build();
         InternalVisibilityConfig visibilityConfig =
                 new InternalVisibilityConfig.Builder(/* id= */ prefix + "Schema")
                         .addVisibleToConfig(visibleToConfig)
@@ -1423,47 +1594,47 @@ public class VisibilityCheckerImplTest {
         try {
             // Enterprise call but no access to packageFoo won't have access.
             when(mockPackageManager.hasSigningCertificate(
-                    packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
+                            packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
                     .thenReturn(false);
             assertThat(
-                    mVisibilityChecker.isSchemaSearchableByCaller(
-                            new FrameworkCallerAccess(
-                                    mAttributionSource,
-                                    /* callerHasSystemAccess= */ false,
-                                    /* isForEnterprise= */ true),
-                            "package",
-                            prefix + "Schema",
-                            mVisibilityStore))
+                            mVisibilityChecker.isSchemaSearchableByCaller(
+                                    new FrameworkCallerAccess(
+                                            mAttributionSource,
+                                            /* callerHasSystemAccess= */ false,
+                                            /* isForEnterprise= */ true),
+                                    "package",
+                                    prefix + "Schema",
+                                    mVisibilityStore))
                     .isFalse();
 
             // has READ_SMS and access to packageFoo will have access.
             when(mockPackageManager.hasSigningCertificate(
-                    packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
+                            packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
                     .thenReturn(true);
             assertThat(
-                    mVisibilityChecker.isSchemaSearchableByCaller(
-                            new FrameworkCallerAccess(
-                                    mAttributionSource,
-                                    /* callerHasSystemAccess= */ false,
-                                    /* isForEnterprise= */ false),
-                            "package",
-                            prefix + "Schema",
-                            mVisibilityStore))
+                            mVisibilityChecker.isSchemaSearchableByCaller(
+                                    new FrameworkCallerAccess(
+                                            mAttributionSource,
+                                            /* callerHasSystemAccess= */ false,
+                                            /* isForEnterprise= */ false),
+                                    "package",
+                                    prefix + "Schema",
+                                    mVisibilityStore))
                     .isTrue();
 
             // both enterprise call and has access to packageFoo will have access.
             when(mockPackageManager.hasSigningCertificate(
-                    packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
+                            packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
                     .thenReturn(true);
             assertThat(
-                    mVisibilityChecker.isSchemaSearchableByCaller(
-                            new FrameworkCallerAccess(
-                                    mAttributionSource,
-                                    /* callerHasSystemAccess= */ false,
-                                    /* isForEnterprise= */ true),
-                            "package",
-                            prefix + "Schema",
-                            mVisibilityStore))
+                            mVisibilityChecker.isSchemaSearchableByCaller(
+                                    new FrameworkCallerAccess(
+                                            mAttributionSource,
+                                            /* callerHasSystemAccess= */ false,
+                                            /* isForEnterprise= */ true),
+                                    "package",
+                                    prefix + "Schema",
+                                    mVisibilityStore))
                     .isTrue();
         } finally {
             mUiAutomation.dropShellPermissionIdentity();
@@ -1481,17 +1652,17 @@ public class VisibilityCheckerImplTest {
         when(mockPackageManager.getPackageUid(eq(packageNameFoo), /* flags= */ anyInt()))
                 .thenReturn(mAttributionSource.getUid());
         when(mockPackageManager.hasSigningCertificate(
-                packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
+                        packageNameFoo, sha256CertFoo, PackageManager.CERT_INPUT_SHA256))
                 .thenReturn(true);
 
         String prefix = PrefixUtil.createPrefix("package", "database");
 
         // Create a VDoc which requires READ_SMS and access to packageFoo
         SchemaVisibilityConfig visibleToConfig =
-                new SchemaVisibilityConfig.Builder().addAllowedPackage(
-                        new PackageIdentifier(packageNameFoo,
-                                sha256CertFoo)).addRequiredPermissions(
-                        ImmutableSet.of(SetSchemaRequest.READ_SMS)).build();
+                new SchemaVisibilityConfig.Builder()
+                        .addAllowedPackage(new PackageIdentifier(packageNameFoo, sha256CertFoo))
+                        .addRequiredPermissions(ImmutableSet.of(SetSchemaRequest.READ_SMS))
+                        .build();
         InternalVisibilityConfig visibilityConfig =
                 new InternalVisibilityConfig.Builder(/* id= */ prefix + "Schema")
                         .addVisibleToConfig(visibleToConfig)
@@ -1503,26 +1674,26 @@ public class VisibilityCheckerImplTest {
         try {
             // Enterprise call won't have access since no ENTERPRISE_ACCESS permission
             assertThat(
-                    mVisibilityChecker.isSchemaSearchableByCaller(
-                            new FrameworkCallerAccess(
-                                    mAttributionSource,
-                                    /* callerHasSystemAccess= */ false,
-                                    /* isForEnterprise= */ true),
-                            "package",
-                            prefix + "Schema",
-                            mVisibilityStore))
+                            mVisibilityChecker.isSchemaSearchableByCaller(
+                                    new FrameworkCallerAccess(
+                                            mAttributionSource,
+                                            /* callerHasSystemAccess= */ false,
+                                            /* isForEnterprise= */ true),
+                                    "package",
+                                    prefix + "Schema",
+                                    mVisibilityStore))
                     .isFalse();
 
             // Normal call will have access
             assertThat(
-                    mVisibilityChecker.isSchemaSearchableByCaller(
-                            new FrameworkCallerAccess(
-                                    mAttributionSource,
-                                    /* callerHasSystemAccess= */ false,
-                                    /* isForEnterprise= */ false),
-                            "package",
-                            prefix + "Schema",
-                            mVisibilityStore))
+                            mVisibilityChecker.isSchemaSearchableByCaller(
+                                    new FrameworkCallerAccess(
+                                            mAttributionSource,
+                                            /* callerHasSystemAccess= */ false,
+                                            /* isForEnterprise= */ false),
+                                    "package",
+                                    prefix + "Schema",
+                                    mVisibilityStore))
                     .isTrue();
         } finally {
             mUiAutomation.dropShellPermissionIdentity();
@@ -1720,6 +1891,95 @@ public class VisibilityCheckerImplTest {
                                 "android$database/SchemaA",
                                 mVisibilityStore))
                 .isFalse();
+    }
+
+    @Test
+    @RequiresFlagsEnabled(
+            android.app.appfunctions.flags.Flags.FLAG_ENABLE_APP_FUNCTION_PERMISSION_V2)
+    public void testSchema_requiredReadAppFunctionDataPermission_onlyVisibleToPermissionHolder()
+            throws Exception {
+        String prefix = PrefixUtil.createPrefix("package", "database");
+        InternalVisibilityConfig visibilityConfig =
+                new InternalVisibilityConfig.Builder(/* id= */ prefix + "Schema")
+                        .addVisibleToPermissions(
+                                ImmutableSet.of(SET_SCHEMA_REQUEST_DISCOVER_APP_FUNCTIONS))
+                        .build();
+        mVisibilityStore.setVisibility(
+                ImmutableList.of(visibilityConfig), /* callStatsBuilder= */ null);
+
+        // Not holding the DISCOVER_APP_FUNCTIONS permission, schema is not visible.
+        assertThat(
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        mAttributionSource,
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
+                .isFalse();
+
+        // Holding the DISCOVER_APP_FUNCTIONS permission, schema is visible.
+        mUiAutomation.adoptShellPermissionIdentity(DISCOVER_APP_FUNCTIONS_PERMISSION);
+        try {
+            assertThat(
+                            mVisibilityChecker.isSchemaSearchableByCaller(
+                                    new FrameworkCallerAccess(
+                                            mAttributionSource,
+                                            /* callerHasSystemAccess= */ false,
+                                            /* isForEnterprise= */ false),
+                                    "package",
+                                    prefix + "Schema",
+                                    mVisibilityStore))
+                    .isTrue();
+        } finally {
+            mUiAutomation.dropShellPermissionIdentity();
+        }
+    }
+
+    @Test
+    @RequiresFlagsEnabled(
+            android.app.appfunctions.flags.Flags.FLAG_ENABLE_APP_FUNCTION_PERMISSION_V2)
+    public void
+            testSchema_requiredExecuteAppFunctionSystemPermission_onlyVisibleToPermissionHolder()
+                    throws Exception {
+        String prefix = PrefixUtil.createPrefix("package", "database");
+        InternalVisibilityConfig visibilityConfig =
+                new InternalVisibilityConfig.Builder(/* id= */ prefix + "Schema")
+                        .addVisibleToPermissions(
+                                ImmutableSet.of(SET_SCHEMA_REQUEST_EXECUTE_APP_FUNCTIONS_SYSTEM))
+                        .build();
+        mVisibilityStore.setVisibility(
+                ImmutableList.of(visibilityConfig), /* callStatsBuilder= */ null);
+
+        // Not holding the EXECUTE_APP_FUNCTIONS_SYSTEM permission, schema is not visible.
+        assertThat(
+                        mVisibilityChecker.isSchemaSearchableByCaller(
+                                new FrameworkCallerAccess(
+                                        mAttributionSource,
+                                        /* callerHasSystemAccess= */ false,
+                                        /* isForEnterprise= */ false),
+                                "package",
+                                prefix + "Schema",
+                                mVisibilityStore))
+                .isFalse();
+
+        // Holding the EXECUTE_APP_FUNCTIONS_SYSTEM permission, schema is visible.
+        mUiAutomation.adoptShellPermissionIdentity(EXECUTE_APP_FUNCTIONS_SYSTEM_PERMISSION);
+        try {
+            assertThat(
+                            mVisibilityChecker.isSchemaSearchableByCaller(
+                                    new FrameworkCallerAccess(
+                                            mAttributionSource,
+                                            /* callerHasSystemAccess= */ false,
+                                            /* isForEnterprise= */ false),
+                                    "package",
+                                    prefix + "Schema",
+                                    mVisibilityStore))
+                    .isTrue();
+        } finally {
+            mUiAutomation.dropShellPermissionIdentity();
+        }
     }
 
     @NonNull

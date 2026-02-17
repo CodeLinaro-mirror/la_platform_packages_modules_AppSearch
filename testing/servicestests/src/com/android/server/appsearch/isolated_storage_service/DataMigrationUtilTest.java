@@ -21,6 +21,7 @@ import static android.app.appsearch.testutil.AppSearchTestUtils.generateRandomBy
 
 import static com.google.common.truth.Truth.assertThat;
 
+import android.app.appsearch.AppSearchBatchResult;
 import android.app.appsearch.AppSearchBlobHandle;
 import android.app.appsearch.AppSearchEnvironmentFactory;
 import android.app.appsearch.AppSearchSchema;
@@ -30,6 +31,7 @@ import android.app.appsearch.AppSearchSchema.StringPropertyConfig;
 import android.app.appsearch.EmbeddingVector;
 import android.app.appsearch.FrameworkAppSearchEnvironment;
 import android.app.appsearch.GenericDocument;
+import android.app.appsearch.InternalPutDocumentResponse;
 import android.app.appsearch.InternalSetSchemaResponse;
 import android.app.appsearch.SearchResultPage;
 import android.app.appsearch.SearchSpec;
@@ -188,15 +190,19 @@ public class DataMigrationUtilTest {
                             .build();
             docs.add(email);
         }
+
+        AppSearchBatchResult.Builder<String, InternalPutDocumentResponse> batchResultBuilder =
+                new AppSearchBatchResult.Builder<>();
         appSearchImpl.batchPutDocuments(
                 packageName,
                 databaseName,
                 docs,
-                /* batchResultBuilder= */ null,
+                batchResultBuilder,
                 /* sendChangeNotifications= */ false,
                 /* logger= */ null,
                 PersistType.Code.LITE,
                 /* callStatsBuilder= */ null);
+        assertThat(batchResultBuilder.build().getFailures()).isEmpty();
     }
 
     private static void populateEmailsWithEmbeddingsInAppSearchImpl(
@@ -274,15 +280,19 @@ public class DataMigrationUtilTest {
         List<GenericDocument> docs = new ArrayList<>();
         docs.add(doc0);
         docs.add(doc1);
+
+        AppSearchBatchResult.Builder<String, InternalPutDocumentResponse> batchResultBuilder =
+                new AppSearchBatchResult.Builder<>();
         appSearchImpl.batchPutDocuments(
                 packageName,
                 databaseName,
                 docs,
-                /* batchResultBuilder= */ null,
+                batchResultBuilder,
                 /* sendChangeNotifications= */ false,
                 /* logger= */ null,
                 PersistType.Code.LITE,
                 /* callStatsBuilder= */ null);
+        assertThat(batchResultBuilder.build().getFailures()).isEmpty();
     }
 
 
@@ -344,7 +354,8 @@ public class DataMigrationUtilTest {
         File icingVersion = new File(appSearchDir, "icing/version");
 
         assertThat(icingVersion.exists()).isTrue();
-        assertThat(DataMigrationUtil.needDataMigration(mContext, mUserHandle)).isTrue();
+        assertThat(DataMigrationUtil.needDataMigration(mContext, mUserHandle))
+                .isEqualTo(DataMigrationUtil.MIGRATION_TO_AEGIS_NEEDED);
     }
 
     @Test
@@ -376,7 +387,8 @@ public class DataMigrationUtilTest {
 
         assertThat(dataMigrationStatusFile.exists()).isTrue();
         assertThat(icingVersion.exists()).isTrue();
-        assertThat(DataMigrationUtil.needDataMigration(mContext, mUserHandle)).isTrue();
+        assertThat(DataMigrationUtil.needDataMigration(mContext, mUserHandle))
+                .isEqualTo(DataMigrationUtil.MIGRATION_TO_AEGIS_NEEDED);
     }
 
     @Test
@@ -396,7 +408,8 @@ public class DataMigrationUtilTest {
 
         assertThat(icingDir.exists()).isTrue();
         assertThat(icingVersion.exists()).isFalse();
-        assertThat(DataMigrationUtil.needDataMigration(mContext, mUserHandle)).isFalse();
+        assertThat(DataMigrationUtil.needDataMigration(mContext, mUserHandle))
+                .isEqualTo(DataMigrationUtil.MIGRATION_COMPLETED);
     }
 
     @Test
@@ -1422,15 +1435,19 @@ public class DataMigrationUtilTest {
                         .build();
         List<GenericDocument> docs = new ArrayList<>();
         docs.add(document);
+
+        AppSearchBatchResult.Builder<String, InternalPutDocumentResponse> batchResultBuilder =
+                new AppSearchBatchResult.Builder<>();
         mAppSearchImpl.batchPutDocuments(
                 "package",
                 "db1",
                 docs,
-                /* batchResultBuilder= */ null,
+                batchResultBuilder,
                 /* sendChangeNotifications= */ false,
                 /* logger= */ null,
                 PersistType.Code.LITE,
                 /* callStatsBuilder= */ null);
+        assertThat(batchResultBuilder.build().getFailures()).isEmpty();
 
         DataMigrationStats stats =
                 DataMigrationUtil.runDataMigrationForUser(
@@ -1547,15 +1564,18 @@ public class DataMigrationUtilTest {
             docs.add(doc);
         }
 
+        AppSearchBatchResult.Builder<String, InternalPutDocumentResponse> batchResultBuilder =
+                new AppSearchBatchResult.Builder<>();
         mAppSearchImpl.batchPutDocuments(
                 mContext.getPackageName(),
                 "database1",
                 docs,
-                /* batchResultBuilder= */ null,
+                batchResultBuilder,
                 /* sendChangeNotifications= */ false,
                 /* logger= */ null,
                 PersistType.Code.LITE,
                 /* callStatsBuilder= */ null);
+        assertThat(batchResultBuilder.build().getFailures()).isEmpty();
     }
 
     /**
