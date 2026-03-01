@@ -664,13 +664,6 @@ flag {
 }
 
 flag {
-    name: "enable_remove_doc_count_batching_for_batch_put"
-    namespace: "appsearch"
-    description: "Remove the upper layer batching with document number to improve batchPut performance"
-    bug: "433822099"
-}
-
-flag {
     name: "enable_no_op_manual_persist"
     namespace: "appsearch"
     description: "Makes manual persist to disk calls a no-op."
@@ -696,13 +689,6 @@ flag {
     namespace: "appsearch"
     description: "Enables passing down filters to child iterators for optimized DocHitInfo retrieval"
     bug: "395156795"
-}
-
-flag {
-    name: "enable_reduce_check_optimize_for_set_schema"
-    namespace: "appsearch"
-    description: "Only check optimize if we have deleted or incompatible types for setSchema, and forceOverride is true."
-    bug: "435251329"
 }
 
 flag {
@@ -952,6 +938,15 @@ flag {
     namespace: "appsearch"
     description: "Prevents an empty set in addRequiredPermissionsForSchemaTypeVisibility from granting visibility to all packages."
     bug: "460807276"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+flag {
+    name: "enable_max_page_bytes_limit_in_host"
+    namespace: "appsearch"
+    description: "Limits all search result pages fetches from Icing to 512 KiB. This limit was already in force on Aegis-enabled devices."
+    bug: "483777142"
     metadata {
         purpose: PURPOSE_BUGFIX
     }
