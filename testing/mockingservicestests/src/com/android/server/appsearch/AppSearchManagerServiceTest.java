@@ -247,7 +247,13 @@ public class AppSearchManagerServiceTest {
         mUserInstance =
                 AppSearchUserInstanceManager.getInstance()
                         .getOrCreateUserInstance(
-                                mContext, mUserHandle, appSearchConfig, mExecutorManager, null);
+                                mContext,
+                                mUserHandle,
+                                appSearchConfig,
+                                mExecutorManager,
+                                null,
+                                /* enableIsolatedStorageReverseMigration= */ false,
+                                /* isIsolatedStorageAvailable= */ false);
         mLogger = spy(mUserInstance.getLogger());
         mUserInstance.setLoggerForTest(mLogger);
 
@@ -780,6 +786,28 @@ public class AppSearchManagerServiceTest {
         } finally {
             mUiAutomation.dropShellPermissionIdentity();
         }
+    }
+
+    @Test
+    public void testRemoveByDocumentIdAddsErrorMessageWhenIdNotFound() throws Exception {
+        final long callReceivedTimestampMillis = System.currentTimeMillis();
+        TestBatchResultErrorCallback callback = new TestBatchResultErrorCallback();
+        mAppSearchManagerServiceStub.removeByDocumentId(
+                new RemoveByDocumentIdAidlRequest(
+                        AppSearchAttributionSource.createAttributionSource(mContext, mCallingPid),
+                        DATABASE_NAME,
+                        new RemoveByDocumentIdRequest.Builder(NAMESPACE)
+                                .addIds(/* ids= */ Collections.singleton("123"))
+                                .build(),
+                        mUserHandle,
+                        BINDER_CALL_START_TIME),
+                callback);
+        assertThat(callback.get()).isNull();
+        assertThat(callback.getBatchResult().getFailures())
+                .containsExactly(
+                        "123",
+                        AppSearchResult.newFailedResult(
+                                RESULT_NOT_FOUND, "Document id '123' doesn't exist"));
     }
 
     @Test
@@ -1640,7 +1668,9 @@ public class AppSearchManagerServiceTest {
                                         mUserHandle,
                                         appSearchConfig,
                                         mExecutorManager,
-                                        isolatedStorageServiceManager));
+                                        isolatedStorageServiceManager,
+                                        /* enableIsolatedStorageReverseMigration= */ false,
+                                        /* isIsolatedStorageAvailable= */ false));
     }
 
     @Test
