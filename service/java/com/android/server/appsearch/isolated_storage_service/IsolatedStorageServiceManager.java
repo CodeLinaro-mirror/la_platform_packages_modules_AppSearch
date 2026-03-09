@@ -94,6 +94,7 @@ public class IsolatedStorageServiceManager {
     public static final boolean DEFAULT_ISOLATED_STORAGE_MIGRATION_DISABLED = false;
     public static final boolean DEFAULT_ISOLATED_STORAGE_DELETE_CE_VMS = false;
     public static final boolean DEFAULT_ISOLATED_STORAGE_ENABLE_UNFREEZING_MIGRATION = false;
+    public static final boolean DEFAULT_ISOLATED_STORAGE_ENABLE_REVERSE_MIGRATION = false;
     private static final String ISOLATED_STORAGE_SERVICE =
             "com.android.appsearch.ISOLATED_STORAGE_SERVICE";
     private static final String ISOLATED_STORAGE_SERVICE_CLASS_NAME =
@@ -108,7 +109,7 @@ public class IsolatedStorageServiceManager {
     private static final long VM_STATUS_CHECK_INITIAL_DELAY_SECONDS = 120; // 2 minutes
     private static final long VM_STATUS_CHECK_INTERVAL_SECONDS = 60; // 1 minute
 
-    private static final UserHandle ISOLATED_STORAGE_USER = UserHandle.SYSTEM;
+    public static final UserHandle ISOLATED_STORAGE_USER = UserHandle.SYSTEM;
     private static final String SYSTEM_PROPERTY_ENABLE_DEBUG_BUILD = "ro.debuggable";
     private static final boolean IS_DEBUG_BUILD =
             SystemProperties.getInt(SYSTEM_PROPERTY_ENABLE_DEBUG_BUILD, /* def= */ 0) == 1;
@@ -128,6 +129,12 @@ public class IsolatedStorageServiceManager {
     // The isolated storage service implemented by the apk to manage VM and pass VM connections.
     private volatile IIsolatedStorageService mIsolatedStorageService;
     private volatile boolean mIsReconnecting = false;
+
+    @GuardedBy("mLock")
+    private IsolatedStorageServiceConnection mIsolatedStorageServiceConnection;
+
+    private volatile boolean mIsBindingToIsolatedStorageService = false;
+    private CompletableFuture<Void> mBindIsolatedStorageServiceFuture = new CompletableFuture<>();
 
     // The isolated storage service could be hosted by AiSealManager instead of the isolated
     // storage service apk.
@@ -431,25 +438,67 @@ public class IsolatedStorageServiceManager {
                     RESULT_INTERNAL_ERROR, "Unable to get isolated storage service package name");
         }
 
-        Intent intent = new Intent();
-        intent.setClassName(packageName, ISOLATED_STORAGE_SERVICE_CLASS_NAME);
-        CompletableFuture<Void> future = new CompletableFuture<>();
-        mContext.bindServiceAsUser(
-                intent,
-                new IsolatedStorageServiceConnection(future),
-                Context.BIND_AUTO_CREATE | Context.BIND_IMPORTANT,
-                ISOLATED_STORAGE_USER);
+        Log.i(
+                TAG,
+                "Isolated Storage Service binding status: " + mIsBindingToIsolatedStorageService);
+        if (!Flags.enableIsolatedStorageConnectionFix() || !mIsBindingToIsolatedStorageService) {
+            Intent intent = new Intent();
+            intent.setClassName(packageName, ISOLATED_STORAGE_SERVICE_CLASS_NAME);
+            mBindIsolatedStorageServiceFuture = new CompletableFuture<>();
+
+            if (mIsolatedStorageServiceConnection != null) {
+                Log.i(
+                        TAG,
+                        "Unbinding old Isolated Storage Service connection before creating a"
+                                + " new one");
+                cleanUpIsolatedStorageServiceConnection(mIsolatedStorageServiceConnection);
+            }
+
+            mIsolatedStorageServiceConnection =
+                    new IsolatedStorageServiceConnection(mBindIsolatedStorageServiceFuture);
+            mIsBindingToIsolatedStorageService =
+                    mContext.bindServiceAsUser(
+                            intent,
+                            mIsolatedStorageServiceConnection,
+                            Context.BIND_AUTO_CREATE | Context.BIND_IMPORTANT,
+                            ISOLATED_STORAGE_USER);
+        }
+
         try {
-            future.get(BINDING_WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            mBindIsolatedStorageServiceFuture.get(BINDING_WAIT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
         } catch (Exception e) {
-            Log.e(TAG, "Unable to bind to " + ISOLATED_STORAGE_SERVICE, e);
-            throw new AppSearchException(
-                    RESULT_UNAVAILABLE, "Unable to bind to " + ISOLATED_STORAGE_SERVICE, e);
+            String msg =
+                    "Timed out waiting to bind to "
+                            + ISOLATED_STORAGE_SERVICE
+                            + ". Service binding in progress: "
+                            + mIsBindingToIsolatedStorageService;
+            Log.e(TAG, msg, e);
+            // If mIsolatedStorageService is null and we are not actively binding to the service,
+            // there
+            // may have been a binding error. Clean-up the binder connection to avoid exhausting the
+            // service
+            // limit.
+            if (mIsolatedStorageService == null && !mIsBindingToIsolatedStorageService) {
+                cleanUpIsolatedStorageServiceConnection(mIsolatedStorageServiceConnection);
+            }
+            throw new AppSearchException(RESULT_UNAVAILABLE, msg, e);
         }
         if (mIsolatedStorageService == null) {
-            Log.e(TAG, "Unable to bind to " + ISOLATED_STORAGE_SERVICE);
-            throw new AppSearchException(
-                    RESULT_UNAVAILABLE, "Unable to bind to " + ISOLATED_STORAGE_SERVICE);
+            // If mIsolatedStorageService is null and we are not actively binding to the service,
+            // there
+            // may have been a binding error. Clean-up the binder connection to avoid exhausting the
+            // service
+            // limit.
+            String msg;
+            if (!mIsBindingToIsolatedStorageService) {
+                msg = "Failed to bind to " + ISOLATED_STORAGE_SERVICE;
+                Log.e(TAG, msg);
+                cleanUpIsolatedStorageServiceConnection(mIsolatedStorageServiceConnection);
+            } else {
+                msg = "Binding to " + ISOLATED_STORAGE_SERVICE + " still in progress";
+                Log.i(TAG, msg);
+            }
+            throw new AppSearchException(RESULT_UNAVAILABLE, msg);
         }
     }
 
@@ -536,6 +585,41 @@ public class IsolatedStorageServiceManager {
                         throw new RuntimeException(e);
                     }
                 });
+    }
+
+    @GuardedBy("mLock")
+    private void cleanUpIsolatedStorageServiceConnection(
+            IsolatedStorageServiceConnection connectionToUnbind) {
+        if (Flags.enableIsolatedStorageConnectionFix()) {
+            if (mIsolatedStorageServiceConnection == connectionToUnbind
+                    && mIsolatedStorageServiceConnection != null) {
+                // Unbind to avoid exhausting the service connection limit
+                try {
+                    mContext.unbindService(mIsolatedStorageServiceConnection);
+                    Log.i(TAG, "Unbind IsolatedStorageService Connection");
+                } catch (Exception e) {
+                    Log.e(
+                            TAG,
+                            "Unbind IsolatedStorageService Connection failed: " + e.getMessage());
+                }
+                // Reset the current service connection
+                mIsolatedStorageServiceConnection = null;
+            } else {
+                // A mismatched connection is not necessarily an error. For example, when the
+                // service dies or is killed, both onBindingDied and onServiceDisconnected are
+                // called. In order to ensure that the service connection is appropriately unbound
+                // under all circumstances, we must call cleanUpIsolatedStorageServiceConnection()
+                // in both onBindingDied and onServiceDisconnected. Comparing the service connection
+                // here is to ensure that we don't accidentally cleanup a new service connection
+                // that is currently being created.
+                Log.i(
+                        TAG,
+                        "Isolated Storage Service connection does not match or connection is null: "
+                                + (mIsolatedStorageServiceConnection == null));
+            }
+	} else {
+	    Log.i(TAG, "Isolated Storage connection fix not enabled...Skipping connection unbind");
+	}
     }
 
     /**
@@ -853,7 +937,9 @@ public class IsolatedStorageServiceManager {
         public void onServiceConnected(ComponentName className, IBinder service) {
             mScheduledExecutorService.execute(
                     () -> {
+                        Log.i(TAG, "Establishing mIsolatedStorageService interface");
                         mIsolatedStorageService = IIsolatedStorageService.Stub.asInterface(service);
+                        mIsBindingToIsolatedStorageService = false;
                         IBinder binder = mIsolatedStorageService.asBinder();
                         try {
                             binder.linkToDeath(
@@ -877,6 +963,7 @@ public class IsolatedStorageServiceManager {
                     () -> {
                         synchronized (mLock) {
                             mIsolatedStorageService = null;
+                            cleanUpIsolatedStorageServiceConnection(this);
                         }
                         mFuture.cancel(/* mayInterruptIfRunning= */ true);
                     });
@@ -890,6 +977,7 @@ public class IsolatedStorageServiceManager {
                     () -> {
                         synchronized (mLock) {
                             mIsolatedStorageService = null;
+                            cleanUpIsolatedStorageServiceConnection(this);
                         }
                         mFuture.cancel(/* mayInterruptIfRunning= */ true);
                     });
@@ -914,6 +1002,8 @@ public class IsolatedStorageServiceManager {
                     () -> {
                         synchronized (mLock) {
                             mIsolatedStorageService = null;
+                            cleanUpIsolatedStorageServiceConnection(
+                                    mIsolatedStorageServiceConnection);
                         }
                         replaceVmIcingInstances();
                     });
@@ -958,11 +1048,12 @@ public class IsolatedStorageServiceManager {
                 // TODO(b/421272017): add logs that will cover how many retries we're attempting
                 // and whether they actually recover eventually.
                 if (!reinitializeWithRetryLocked()) {
-                    Log.wtf(
+                    LogUtil.criticalError(
                             TAG,
                             "failed to re-initialize after "
                                     + MAX_REINITIALIZATION_RETRIES
-                                    + " retries");
+                                    + " retries",
+                            /* tr= */ null);
                     return;
                 }
 
@@ -1009,7 +1100,8 @@ public class IsolatedStorageServiceManager {
             Log.i(TAG, "succeeded to re-initialize without forcing vm restart");
             return;
         } catch (Exception e) {
-            Log.wtf(TAG, "failed to re-initialize after without forcing vm restart", e);
+            LogUtil.criticalError(
+                    TAG, "failed to re-initialize after without forcing vm restart", e);
         }
         initialize(
                 /* forceVmRestart= */ true,
@@ -1082,18 +1174,20 @@ public class IsolatedStorageServiceManager {
                         >= CONSECUTIVE_VM_DATA_UNLOCK_DOE_ERROR_THRESHOLD) {
                     // keep the vm on debug builds to surface the unlock issues
                     if (IS_DEBUG_BUILD) {
-                        Log.wtf(
+                        LogUtil.criticalError(
                                 TAG,
                                 "Saw at least "
                                         + CONSECUTIVE_VM_DATA_UNLOCK_DOE_ERROR_THRESHOLD
-                                        + " consecutive DOE errors when trying to unlock vm data");
+                                        + " consecutive DOE errors when trying to unlock vm data",
+                                /* tr= */ null);
                     } else {
                         if (mIsolatedStorageService.deleteVm()) {
                             mConsecutiveVmDataUnlockDoeErrorsLocked = 0;
-                            Log.wtf(
+                            LogUtil.criticalError(
                                     TAG,
                                     "Deleted the VM due to consecutive DOE errors when trying to"
-                                            + " unlock vm data");
+                                            + " unlock vm data",
+                                    /* tr= */ null);
                         }
                     }
                 }
