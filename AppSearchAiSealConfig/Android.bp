@@ -63,4 +63,5 @@ android_app {
         ":GoogleAppSearchAiSealConfig_vm_config",
         ":AppSearchAiSealConfig_aiseal_config",
     ],
+    system_ext_specific: true,
 }

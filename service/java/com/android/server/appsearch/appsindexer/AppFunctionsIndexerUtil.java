@@ -114,8 +114,9 @@ public class AppFunctionsIndexerUtil {
      * doesn't depend on presence of AppFunctionService as executed directly using AIDL.
      */
     public static boolean isAppLevelAppFunctionsEnabled() {
+        // TODO(b/447127837): require at least Android C once finalised here and in the test
         return android.app.appfunctions.flags.Flags.enableDynamicAppFunctions()
-                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN;
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA;
     }
 
     /**
