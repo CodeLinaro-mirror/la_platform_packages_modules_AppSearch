@@ -32,6 +32,7 @@ import android.os.Build;
 import android.util.ArrayMap;
 import android.util.Log;
 
+import com.android.appsearch.flags.Flags;
 import com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionDocument;
 import com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionStaticMetadata;
 
@@ -114,9 +115,13 @@ public class AppFunctionsIndexerUtil {
      * doesn't depend on presence of AppFunctionService as executed directly using AIDL.
      */
     public static boolean isAppLevelAppFunctionsEnabled() {
-        // TODO(b/447127837): require at least Android C once finalised here and in the test
         return android.app.appfunctions.flags.Flags.enableDynamicAppFunctions()
-                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA;
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.CINNAMON_BUN;
+    }
+
+    /** Returns whether app can declare multiple app functions XML files. */
+    public static boolean isHandlingMultipleAppFunctionXmlEnabled() {
+        return isAppLevelAppFunctionsEnabled() && Flags.enableHandlingMultipleAppFunctionXml();
     }
 
     /**
@@ -167,8 +172,15 @@ public class AppFunctionsIndexerUtil {
             AppFunctionResolveInfo appFunctionResolveInfo =
                     entry.getValue().getAppFunctionResolveInfo();
 
+            PackageManager.Property appFunctionSchemaProperty =
+                    appFunctionResolveInfo == null
+                            ? null
+                            : appFunctionResolveInfo.getAppFunctionSchemaProperty(packageManager);
+
             String assetFilePath =
-                    getDynamicSchemaAssetPath(packageManager, packageInfo, appFunctionResolveInfo);
+                    appFunctionSchemaProperty == null
+                            ? null
+                            : appFunctionSchemaProperty.getString();
 
             String packageName = packageInfo.packageName;
             if (assetFilePath != null) {
@@ -181,51 +193,6 @@ public class AppFunctionsIndexerUtil {
         }
 
         return schemasPerPackage;
-    }
-
-    /**
-     * Retrieves the asset path for the dynamic app function schema from package properties.
-     *
-     * <p>It first checks for an application-level property, and if not found, falls back to a
-     * service-level property.
-     *
-     * @return The asset file path as a string, or {@code null} if not found.
-     */
-    @Nullable
-    private static String getDynamicSchemaAssetPath(
-            @NonNull PackageManager packageManager,
-            @NonNull PackageInfo packageInfo,
-            @Nullable AppFunctionResolveInfo appFunctionResolveInfo) {
-        final String dynamicSchemaPropertyName = "android.app.appfunctions.schema";
-        final String packageName = packageInfo.packageName;
-
-        // First, try to get the schema path from the application-level property.
-        if (isAppLevelAppFunctionsEnabled()) {
-            PackageManager.Property property =
-                    getProperty(packageManager, dynamicSchemaPropertyName, packageName);
-            if (property != null && property.isString()) {
-                return property.getString();
-            }
-        }
-
-        // If not found at the application level, fall back to the service-level property.
-        if (appFunctionResolveInfo == null
-                || appFunctionResolveInfo.getAppFunctionServiceResolveInfos().isEmpty()) {
-            return null;
-        }
-
-        // TODO: b/468288106 - Support multiple services per package.
-        ResolveInfo resolveInfo = appFunctionResolveInfo.getAppFunctionServiceResolveInfos().get(0);
-        ComponentName serviceComponent =
-                new ComponentName(
-                        resolveInfo.serviceInfo.packageName, resolveInfo.serviceInfo.name);
-        PackageManager.Property property =
-                getProperty(packageManager, dynamicSchemaPropertyName, serviceComponent);
-        if (property != null && property.isString()) {
-            return property.getString();
-        }
-
-        return null;
     }
 
     /**
