@@ -568,16 +568,6 @@ flag {
 }
 
 flag {
-    name: "enable_user_instance_futures"
-    namespace: "appsearch"
-    description: "Enables using futures to create user instances."
-    bug: "415031127"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
     name: "enable_database_scoped_schema_operations"
     namespace: "appsearch"
     description: "Enable database-scoped set and get schema operations for AppSearch internal impl."
@@ -664,13 +654,6 @@ flag {
 }
 
 flag {
-    name: "enable_remove_doc_count_batching_for_batch_put"
-    namespace: "appsearch"
-    description: "Remove the upper layer batching with document number to improve batchPut performance"
-    bug: "433822099"
-}
-
-flag {
     name: "enable_no_op_manual_persist"
     namespace: "appsearch"
     description: "Makes manual persist to disk calls a no-op."
@@ -696,13 +679,6 @@ flag {
     namespace: "appsearch"
     description: "Enables passing down filters to child iterators for optimized DocHitInfo retrieval"
     bug: "395156795"
-}
-
-flag {
-    name: "enable_reduce_check_optimize_for_set_schema"
-    namespace: "appsearch"
-    description: "Only check optimize if we have deleted or incompatible types for setSchema, and forceOverride is true."
-    bug: "435251329"
 }
 
 flag {
@@ -741,30 +717,10 @@ flag {
 }
 
 flag {
-    name: "enable_apps_indexer_use_first_resolve_info"
-    namespace: "appsearch"
-    description: "Uses the first resolve info per package instead of the last"
-    bug: "437400697"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
-flag {
     name: "enable_apps_indexer_locale_change_full_update"
     namespace: "appsearch"
     description: "Triggers a full update when the locale changes"
     bug: "437400460"
-    metadata {
-        purpose: PURPOSE_BUGFIX
-    }
-}
-
- flag {
-    name: "enable_schema_migration_executor_dead_lock_fix"
-    namespace: "appsearch"
-    description: "Enable the executor dead lock fix for the get schema call in schema migration job."
-    bug: "436282573"
     metadata {
         purpose: PURPOSE_BUGFIX
     }
@@ -956,6 +912,15 @@ flag {
         purpose: PURPOSE_BUGFIX
     }
 }
+flag {
+    name: "enable_max_page_bytes_limit_in_host"
+    namespace: "appsearch"
+    description: "Limits all search result pages fetches from Icing to 512 KiB. This limit was already in force on Aegis-enabled devices."
+    bug: "483777142"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
 
 flag {
     name: "enable_isolated_storage_connection_fix"
@@ -965,4 +930,21 @@ flag {
     metadata {
         purpose: PURPOSE_BUGFIX
     }
+}
+
+flag {
+    name: "enable_handling_multiple_app_function_xml"
+    namespace: "appsearch"
+    description: "Enables handling multiple app function xml files from services and app level resources."
+    bug: "468288106"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "enable_contacts_indexer_extended_properties"
+    namespace: "appsearch"
+    description: "Enables setting and populating more fields in ContactIndexer's Person and ContactPoint schemas."
+    bug: "388074595"
 }

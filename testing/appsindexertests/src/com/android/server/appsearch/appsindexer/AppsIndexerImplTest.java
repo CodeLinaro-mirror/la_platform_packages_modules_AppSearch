@@ -16,6 +16,9 @@
 
 package com.android.server.appsearch.appsindexer;
 
+import static android.app.appsearch.testutil.FrameworkFlagUtils.assumeFlagIsEnabled;
+import static com.android.server.appsearch.appsindexer.TestUtils.assertAppFunctionIdInGenericDocument;
+
 import static com.android.compatibility.common.util.ApiLevelUtil.isAtLeast;
 import static com.android.server.appsearch.appsindexer.TestUtils.APP_FUNCTION_STATIC_METADATA_PARENT_PROPERTIES;
 import static com.android.server.appsearch.appsindexer.TestUtils.APP_FUNCTION_STATIC_METADATA_PARENT_SCHEMA_XSD;
@@ -632,11 +635,10 @@ public class AppsIndexerImplTest {
     @Test
     @RequiresFlagsEnabled({
         Flags.FLAG_ENABLE_APP_FUNCTIONS_SCHEMA_PARSER,
-        android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS
     })
     public void testAppsIndexerImpl_withApplicationLevelSchema_indexesAppFunctions()
             throws Exception {
-        assumeTrue(isAtLeast(Build.VERSION_CODES.BAKLAVA));
+        assumeFlagIsEnabled(android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS);
         PackageManager pm1 = Mockito.mock(PackageManager.class);
         PackageInfo app = createFakePackageInfo(0);
         ResolveInfo appResolveInfo = createFakeLaunchResolveInfo(0);
@@ -683,11 +685,10 @@ public class AppsIndexerImplTest {
     @Test
     @RequiresFlagsEnabled({
         Flags.FLAG_ENABLE_APP_FUNCTIONS_SCHEMA_PARSER,
-        android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS
     })
     public void testAppsIndexerImpl_withApplicationLevelFunctions_indexesAppFunctions()
             throws Exception {
-        assumeTrue(isAtLeast(Build.VERSION_CODES.BAKLAVA));
+        assumeFlagIsEnabled(android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS);
         PackageManager pm1 = Mockito.mock(PackageManager.class);
         PackageInfo app = createFakePackageInfo(0);
         ResolveInfo appResolveInfo = createFakeLaunchResolveInfo(0);
@@ -725,11 +726,10 @@ public class AppsIndexerImplTest {
     @Test
     @RequiresFlagsEnabled({
         Flags.FLAG_ENABLE_APP_FUNCTIONS_SCHEMA_PARSER,
-        android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS
     })
     public void testAppsIndexerImpl_withAppLevelFunctions_multipleAssets_indexesAppFunctions()
             throws Exception {
-        assumeTrue(isAtLeast(Build.VERSION_CODES.BAKLAVA));
+        assumeFlagIsEnabled(android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS);
         PackageManager pm1 = Mockito.mock(PackageManager.class);
         PackageInfo app = createFakePackageInfo(0);
         ResolveInfo appResolveInfo = createFakeLaunchResolveInfo(0);
@@ -773,11 +773,10 @@ public class AppsIndexerImplTest {
     @Test
     @RequiresFlagsEnabled({
         Flags.FLAG_ENABLE_APP_FUNCTIONS_SCHEMA_PARSER,
-        android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS
     })
     public void testAppsIndexerImpl_withAppAndServiceLevelFunctions_multipleAssets_indexesAll()
             throws Exception {
-        assumeTrue(isAtLeast(Build.VERSION_CODES.BAKLAVA));
+        assumeFlagIsEnabled(android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS);
         PackageManager pm1 = Mockito.mock(PackageManager.class);
         PackageInfo app = createFakePackageInfo(0);
         ResolveInfo appResolveInfo = createFakeLaunchResolveInfo(0);
@@ -1264,8 +1263,8 @@ public class AppsIndexerImplTest {
                 indexedFunctionDocuments
                         .get("com.fake.package0")
                         .get("com.fake.package0/com.dynamicSchemaApp.utils#print");
-        assertThat(fnMetadata.getPropertyString("functionId"))
-                .isEqualTo("com.dynamicSchemaApp.utils#print");
+        assertAppFunctionIdInGenericDocument(
+                fnMetadata, "com.fake.package0", "com.dynamicSchemaApp.utils#print");
         GenericDocument anotherTopLevelDocument =
                 indexedFunctionDocuments
                         .get("com.fake.package0")

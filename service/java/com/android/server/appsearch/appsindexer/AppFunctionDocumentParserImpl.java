@@ -52,6 +52,7 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
     private static final String XML_TAG_APPFUNCTION = "appfunction";
     private static final String XML_TAG_APPFUNCTIONS_ROOT = "appfunctions";
     private static final String XML_TAG_ID = "id";
+    private static final String XML_TAG_FUNCTION_ID = "functionId";
     private static final String SNAKE_CASE_SEPARATOR = "_";
 
     @NonNull private final String mIndexerPackageName;
@@ -80,10 +81,15 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
         Objects.requireNonNull(assetFilePath);
         Objects.requireNonNull(serviceName);
         try {
-            return parseAppFunctionsIntoMap(
-                    initializeParser(packageManager, packageName, assetFilePath),
-                    packageName,
-                    serviceName);
+            XmlPullParserFactory factory = XmlPullParserFactory.newInstance();
+            factory.setNamespaceAware(true);
+            XmlPullParser parser = factory.newPullParser();
+            AssetManager assetManager =
+                    packageManager.getResourcesForApplication(packageName).getAssets();
+            try (InputStreamReader isr = new InputStreamReader(assetManager.open(assetFilePath))) {
+                parser.setInput(isr);
+                return parseAppFunctionsIntoMap(parser, packageName, serviceName);
+            }
         } catch (Exception ex) {
             // The code parses an XML file from another app's assets, using a broad try-catch to
             // handle potential errors since the XML structure might be unpredictable.
@@ -95,27 +101,6 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
                     ex);
         }
         return Collections.emptyMap();
-    }
-
-    /**
-     * Initializes an {@link XmlPullParser} to parse xml based on the packageName and assetFilePath.
-     */
-    @NonNull
-    private XmlPullParser initializeParser(
-            @NonNull PackageManager packageManager,
-            @NonNull String packageName,
-            @NonNull String assetFilePath)
-            throws XmlPullParserException, PackageManager.NameNotFoundException, IOException {
-        Objects.requireNonNull(packageManager);
-        Objects.requireNonNull(packageName);
-        Objects.requireNonNull(assetFilePath);
-        XmlPullParserFactory factory = XmlPullParserFactory.newInstance();
-        factory.setNamespaceAware(true);
-        XmlPullParser parser = factory.newPullParser();
-        AssetManager assetManager =
-                packageManager.getResourcesForApplication(packageName).getAssets();
-        parser.setInput(new InputStreamReader(assetManager.open(assetFilePath)));
-        return parser;
     }
 
     /**
@@ -173,6 +158,7 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
                     && !XML_TAG_APPFUNCTION.equals(parser.getName())) {
                 String tagName = parser.getName();
                 switch (tagName) {
+                    case "id":
                     case "function_id":
                         functionId = parser.nextText().trim();
                         break;
@@ -373,7 +359,19 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
                                     toLowerCamelCase(parser.getName(), SNAKE_CASE_SEPARATOR));
                     PropertyConfig propertyConfig =
                             qualifiedPropertyNamesToPropertyConfig.get(currentPropertyPath);
-                    if (propertyConfig instanceof DocumentPropertyConfig) {
+
+                    if (parser.getName().equals(XML_TAG_ID)
+                            // Provides compat with v1 format that used function_id tag for denoting
+                            // id.
+                            || (isAppLevelAppFunctionsEnabled()
+                                    && toLowerCamelCase(parser.getName(), SNAKE_CASE_SEPARATOR)
+                                            .equals(XML_TAG_FUNCTION_ID))) {
+                        String id = parser.nextText().trim();
+                        if (!id.isEmpty()) {
+                            docBuilder.setId(packageName + "/" + id);
+                            wasDocIdSet = true;
+                        }
+                    } else if (propertyConfig instanceof DocumentPropertyConfig) {
                         String nestedSchemaType =
                                 ((DocumentPropertyConfig) propertyConfig).getSchemaType();
                         GenericDocument.Builder nestedDoc =
@@ -394,21 +392,16 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
                         primitivePropertyValues
                                 .computeIfAbsent(currentPropertyPath, k -> new ArrayList<>())
                                 .add(parser.nextText().trim());
-                    } else if (parser.getName().equals(XML_TAG_ID)) {
-                        String id = parser.nextText().trim();
-                        if (!id.isEmpty()) {
-                            docBuilder.setId(packageName + "/" + id);
-                            wasDocIdSet = true;
-                        }
                     } else {
-                        // Unrecognized start tag, throw an exception.
-                        throw new IllegalStateException(
-                                "Found a start tag not defined by schema "
-                                        + schemaType
-                                        + ": "
-                                        + parser.getName()
-                                        + ". Check the corresponding schema file specified by "
-                                        + "android.app.appfunctions.schema.");
+                        if (LogUtil.DEBUG) {
+                            Log.d(
+                                    TAG,
+                                    "Unknown property: "
+                                            + parser.getName()
+                                            + " for schema: "
+                                            + schemaType);
+                        }
+                        skipTagAndItsSubTree(parser);
                     }
                     break;
 
@@ -442,6 +435,29 @@ public class AppFunctionDocumentParserImpl implements AppFunctionDocumentParser 
         }
 
         throw new IllegalStateException("Code should never reach here.");
+    }
+
+    /**
+     * Skips an unknown tag and its subtree until the corresponding end tag is reached.
+     *
+     * <p>When this function is called, the parser should point to the START_TAG of the unknown
+     * element, and would point to its corresponding END_TAG once this function completes.
+     */
+    private static void skipTagAndItsSubTree(@NonNull XmlPullParser parser)
+            throws XmlPullParserException, IOException {
+        int depth = 1;
+        while (depth != 0) {
+            switch (parser.next()) {
+                case XmlPullParser.END_TAG:
+                    depth--;
+                    break;
+                case XmlPullParser.START_TAG:
+                    depth++;
+                    break;
+                case XmlPullParser.END_DOCUMENT:
+                    throw new XmlPullParserException("Malformed XML: Unexpected end of document");
+            }
+        }
     }
 
     /**

@@ -289,7 +289,7 @@ public class AppSearchManagerService extends SystemService {
         UserHandle userHandle = UserHandle.SYSTEM;
         mExecutorManager.executeLambdaForUserNoCallbackAsync(
                 userHandle,
-                /* isReadOnly= */ true,
+                /* isReadOnly= */ !Flags.enableIsolatedStorageConnectionFix(),
                 () -> {
                     Log.i(TAG, "Initializing isolated storage service");
                     try {
@@ -508,10 +508,19 @@ public class AppSearchManagerService extends SystemService {
             }
         }
         if (mIsolatedStorageServiceManager != null) {
-            SHARED_EXECUTOR.execute(
-                    () ->
-                            mIsolatedStorageServiceManager.onUserUnlocking(
-                                    mAppSearchConfig, userHandle));
+            if (Flags.enableIsolatedStorageConnectionFix()) {
+                mExecutorManager.executeLambdaForUserNoCallbackAsync(
+                        userHandle,
+                        /* isReadOnly= */ false,
+                        () ->
+                                mIsolatedStorageServiceManager.onUserUnlocking(
+                                        mAppSearchConfig, userHandle));
+            } else {
+                SHARED_EXECUTOR.execute(
+                        () ->
+                                mIsolatedStorageServiceManager.onUserUnlocking(
+                                        mAppSearchConfig, userHandle));
+            }
         }
 
         // Only schedule task if AppSearch exists for this user.
@@ -610,10 +619,8 @@ public class AppSearchManagerService extends SystemService {
                 checkOptimizeFuture.cancel(/* mayInterruptIfRunning= */ false);
             }
 
-            if (Flags.enableUserInstanceFutures()) {
-                // Cancel any ongoing user instance creation.
-                mAppSearchUserInstanceManager.cancelUserCreation(userHandle);
-            }
+            // Cancel any ongoing user instance creation.
+            mAppSearchUserInstanceManager.cancelUserCreation(userHandle);
 
             boolean isVMEnabledForUser = isVmEnabledForUser(userHandle);
             if (!isVMEnabledForUser || requiresShutdown) {
@@ -740,8 +747,12 @@ public class AppSearchManagerService extends SystemService {
                         callingPackageName, request.getDatabaseName());
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     Bundle accountPropertyBundle = request.getSchemasWipeoutAccountPropertyPaths();
                     Map<String, Set<String>> accountPropertyPaths = new ArrayMap<>();
                     if (accountPropertyBundle != null) {
@@ -787,24 +798,12 @@ public class AppSearchManagerService extends SystemService {
                     // deleted as well. We should checkForOptimize for these deletion.
                     SetSchemaResponse setSchemaResponse =
                             internalSetSchemaResponse.getSetSchemaResponse();
-                    if (Flags.enableReduceCheckOptimizeForSetSchema() || instance.isVMEnabled()) {
-                        if (request.isForceOverride() &&
-                                (!setSchemaResponse.getDeletedTypes().isEmpty()
-                                        || !setSchemaResponse.getIncompatibleTypes().isEmpty())) {
-                            // We have deleted and/or incompatible schemas with forceOverride true.
-                            // So we might have documents deleted in this setSchema call, and we
-                            // need to check optimize here.
-                            long checkForOptimizeLatencyStartTimeMillis =
-                                    SystemClock.elapsedRealtime();
-                            checkForOptimize(targetUser, instance);
-                            long checkForOptimizeLatencyEndTimeMillis =
-                                    SystemClock.elapsedRealtime();
-                            setSchemaStatsBuilder
-                                    .setOptimizeLatencyMillis(
-                                            (int) (checkForOptimizeLatencyEndTimeMillis
-                                                    - checkForOptimizeLatencyStartTimeMillis));
-                        }
-                    } else {
+                    if (request.isForceOverride() &&
+                            (!setSchemaResponse.getDeletedTypes().isEmpty()
+                                    || !setSchemaResponse.getIncompatibleTypes().isEmpty())) {
+                        // We have deleted and/or incompatible schemas with forceOverride true.
+                        // So we might have documents deleted in this setSchema call, and we
+                        // need to check optimize here.
                         long checkForOptimizeLatencyStartTimeMillis = SystemClock.elapsedRealtime();
                         checkForOptimize(targetUser, instance);
                         long checkForOptimizeLatencyEndTimeMillis = SystemClock.elapsedRealtime();
@@ -863,6 +862,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                         instance.getLogger().logStats(setSchemaStatsBuilder
                                 .setStatusCode(statusCode)
@@ -948,8 +950,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(userToQuery);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
 
                     boolean callerHasSystemAccess = instance.getVisibilityChecker()
                             .doesCallerHaveSystemAccess(callingPackageName);
@@ -1001,6 +1007,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -1047,8 +1056,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     List<String> namespaces =
                             instance.getAppSearchImpl().getNamespaces(
                                     callingPackageName,
@@ -1095,6 +1108,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -1144,12 +1160,16 @@ public class AppSearchManagerService extends SystemService {
                 // initialize later.
                 // This is only used for logging stats.
                 List<GenericDocument> takenActionGenericDocuments = null;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
 
                 try {
                     AppSearchBatchResult.Builder<
                             String, InternalPutDocumentResponse> resultBuilder =
                                     new AppSearchBatchResult.Builder<>();
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     List<GenericDocumentParcel> documentParcels =
                             request.getDocumentsParcel().getDocumentParcels();
                     List<GenericDocumentParcel> takenActionDocumentParcels =
@@ -1235,83 +1255,26 @@ public class AppSearchManagerService extends SystemService {
                         }
                     } else {
                         if (!documentParcels.isEmpty() || !takenActionDocumentParcels.isEmpty()) {
-                            if (Flags.enableRemoveDocCountBatchingForBatchPut()
-                                    || instance.isVMEnabled()) {
-                                List<GenericDocument> docs = new ArrayList<>();
-                                for (int i = 0; i < documentParcels.size(); i++) {
-                                    docs.add(new GenericDocument(documentParcels.get(i)));
-                                }
-                                for (int i = 0; i < takenActionDocumentParcels.size(); i++) {
-                                    GenericDocument document = new GenericDocument(
-                                        takenActionDocumentParcels.get(i));
-                                    docs.add(document);
-                                    takenActionGenericDocuments.add(document);
-                                }
-                                instance.getAppSearchImpl().batchPutDocuments(
-                                        callingPackageName,
-                                        request.getDatabaseName(),
-                                        docs,
-                                        resultBuilder,
-                                        /* sendChangeNotifications=*/ true,
-                                        instance.getLogger(),
-                                        PersistType.Code.UNKNOWN,
-                                        callStatsBuilder);
-                            } else {
-                                // List to hold the current batch.
-                                List<GenericDocument> currentBatch = new ArrayList<>();
-                                // The lock is held in AppSearchImpl.batchPutDocuments. To
-                                // avoid holding it for too long, we divide the documents
-                                // into smaller batches. We flush whenever we
-                                // reach MAX_NUMBER_OF_DOCS_BUFFERED.
-                                // We also need to limit the # of bytes we send to the
-                                // isolated_storage_service, and it is currently done in
-                                // AppSearchImpl as it is easier to get the byte size
-                                // from the proto directly.
-                                for (int i = 0; i < documentParcels.size(); i++) {
-                                    if (currentBatch.size() >= MAX_NUMBER_OF_DOCS_BUFFERED) {
-                                        instance.getAppSearchImpl().batchPutDocuments(
-                                                callingPackageName,
-                                                request.getDatabaseName(),
-                                                currentBatch,
-                                                resultBuilder,
-                                                /* sendChangeNotifications=*/ true,
-                                                instance.getLogger(),
-                                                PersistType.Code.UNKNOWN,
-                                                callStatsBuilder);
-                                        currentBatch.clear();
-                                    }
-                                    currentBatch.add(new GenericDocument(documentParcels.get(i)));
-                                }
-                                for (int i = 0; i < takenActionDocumentParcels.size(); i++) {
-                                    if (currentBatch.size() >= MAX_NUMBER_OF_DOCS_BUFFERED) {
-                                        instance.getAppSearchImpl().batchPutDocuments(
-                                                callingPackageName,
-                                                request.getDatabaseName(),
-                                                currentBatch,
-                                                resultBuilder,
-                                                /* sendChangeNotifications=*/ true,
-                                                instance.getLogger(),
-                                                PersistType.Code.UNKNOWN,
-                                                callStatsBuilder);
-                                        currentBatch.clear();
-                                    }
-                                    GenericDocument document = new GenericDocument(
-                                            takenActionDocumentParcels.get(i));
-                                    takenActionGenericDocuments.add(document);
-                                    currentBatch.add(document);
-                                }
-                                // flush the last batch with
-                                // mAppSearchConfig.getLightweightPersistType().
-                                instance.getAppSearchImpl().batchPutDocuments(
-                                        callingPackageName,
-                                        request.getDatabaseName(),
-                                        currentBatch,
-                                        resultBuilder,
-                                        /* sendChangeNotifications=*/ true,
-                                        instance.getLogger(),
-                                        PersistType.Code.UNKNOWN,
-                                        callStatsBuilder);
+                            List<GenericDocument> docs = new ArrayList<>();
+                            for (int i = 0; i < documentParcels.size(); i++) {
+                                docs.add(new GenericDocument(documentParcels.get(i)));
                             }
+                            for (int i = 0; i < takenActionDocumentParcels.size(); i++) {
+                                GenericDocument document =
+                                        new GenericDocument(takenActionDocumentParcels.get(i));
+                                docs.add(document);
+                                takenActionGenericDocuments.add(document);
+                            }
+                            instance.getAppSearchImpl()
+                                    .batchPutDocuments(
+                                            callingPackageName,
+                                            request.getDatabaseName(),
+                                            docs,
+                                            resultBuilder,
+                                            /* sendChangeNotifications=*/ true,
+                                            instance.getLogger(),
+                                            PersistType.Code.UNKNOWN,
+                                            callStatsBuilder);
 
                             // BatchPut + schedule persistToDisk were ramped together by
                             // Flags.enableBatchPut(), so no need to check
@@ -1414,6 +1377,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
 
                         // Extract metrics from taken action generic documents and add log.
@@ -1508,8 +1474,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(userToQuery);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     AppSearchBatchResult.Builder<String, GenericDocumentParcel> resultBuilder =
                             new AppSearchBatchResult.Builder<>();
 
@@ -1620,6 +1590,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -1670,10 +1643,14 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
                     AppSearchBatchResult.Builder<AppSearchBlobHandle, ParcelFileDescriptor>
                             resultBuilder = new AppSearchBatchResult.Builder<>();
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     List<AppSearchBlobHandle> blobHandles = request.getBlobHandles();
                     for (int i = 0; i < blobHandles.size(); i++) {
                         AppSearchBlobHandle blobHandle = blobHandles.get(i);
@@ -1733,6 +1710,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -1787,10 +1767,14 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
                     AppSearchBatchResult.Builder<AppSearchBlobHandle, Void>
                             resultBuilder = new AppSearchBatchResult.Builder<>();
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     List<AppSearchBlobHandle> blobHandles = request.getBlobHandles();
                     for (int i = 0; i < blobHandles.size(); i++) {
                         AppSearchBlobHandle blobHandle = blobHandles.get(i);
@@ -1850,6 +1834,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -1904,10 +1891,14 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
                     AppSearchBatchResult.Builder<AppSearchBlobHandle, Void>
                             resultBuilder = new AppSearchBatchResult.Builder<>();
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     List<AppSearchBlobHandle> blobHandles = request.getBlobHandles();
                     for (int i = 0; i < blobHandles.size(); i++) {
                         AppSearchBlobHandle blobHandle = blobHandles.get(i);
@@ -1968,6 +1959,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
 
@@ -2025,10 +2019,14 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
                     AppSearchBatchResult.Builder<AppSearchBlobHandle, ParcelFileDescriptor>
                             resultBuilder = new AppSearchBatchResult.Builder<>();
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     List<AppSearchBlobHandle> blobHandles = request.getBlobHandles();
                     for (int i = 0; i < blobHandles.size(); i++) {
                         AppSearchBlobHandle blobHandle = blobHandles.get(i);
@@ -2098,6 +2096,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -2152,8 +2153,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     List<InternalVisibilityConfig> visibilityConfigs =
                             request.getVisibilityConfigs();
                     instance.getAppSearchImpl().setBlobNamespaceVisibility(
@@ -2210,6 +2215,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -2263,8 +2271,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     SearchResultPage searchResultPage = instance.getAppSearchImpl().query(
                             callingPackageName,
                             request.getDatabaseName(),
@@ -2310,6 +2322,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -2367,8 +2382,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(userToQuery);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     boolean callerHasSystemAccess = instance.getVisibilityChecker()
                             .doesCallerHaveSystemAccess(callingPackageName);
                     SearchSpec querySearchSpec = request.isForEnterprise()
@@ -2423,6 +2442,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -2493,8 +2515,12 @@ public class AppSearchManagerService extends SystemService {
                             .setDatabase(request.getDatabaseName())
                             .setJoinType(request.getJoinType());
                 }
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(userToQuery);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     SearchResultPage searchResultPage =
                             instance.getAppSearchImpl().getNextPage(
                                     callingPackageName,
@@ -2543,7 +2569,10 @@ public class AppSearchManagerService extends SystemService {
                                 .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
-                                .setLaunchVMEnabled(instance.isVMEnabled());
+                                .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis));
                         instance.getLogger().logStats(builder.build());
                         instance.getLogger().logStats(statsBuilder.build());
                     }
@@ -2594,8 +2623,12 @@ public class AppSearchManagerService extends SystemService {
                     AppSearchUserInstance instance = null;
                     int operationSuccessCount = 0;
                     int operationFailureCount = 0;
+                    long getUserInstanceStartTimeMillis = 0;
+                    long getUserInstanceEndTimeMillis = 0;
                     try {
+                        getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                         instance = mAppSearchUserInstanceManager.getUserInstance(userToQuery);
+                        getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                         instance.getAppSearchImpl().invalidateNextPageToken(
                                 callingPackageName, request.getNextPageToken(), callStatsBuilder);
                         operationSuccessCount++;
@@ -2633,6 +2666,9 @@ public class AppSearchManagerService extends SystemService {
                                     .setNumOperationsSucceeded(operationSuccessCount)
                                     .setNumOperationsFailed(operationFailureCount)
                                     .setLaunchVMEnabled(instance.isVMEnabled())
+                                    .setGetUserInstanceLatency(
+                                            (int) (getUserInstanceEndTimeMillis
+                                                    - getUserInstanceStartTimeMillis))
                                     .build());
                         }
                     }
@@ -2686,8 +2722,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     // we don't need to append the file. The file is always brand new.
                     try (DataOutputStream outputStream = new DataOutputStream(new FileOutputStream(
                             request.getParcelFileDescriptor().getFileDescriptor()))) {
@@ -2748,6 +2788,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -2798,8 +2841,12 @@ public class AppSearchManagerService extends SystemService {
                 int operationFailureCount = 0;
                 SchemaMigrationStats.Builder schemaMigrationStatsBuilder = new SchemaMigrationStats
                         .Builder(request.getSchemaMigrationStats());
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
 
                     GenericDocument document;
                     ArrayList<MigrationFailure> migrationFailures = new ArrayList<>();
@@ -2913,6 +2960,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                         long enabledFeatures = new CallStats.Builder()
                                 .setLaunchVMEnabled(true).build().getEnabledFeatures();
@@ -2969,8 +3019,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     // TODO(b/173532925): Implement logging for statsBuilder
                     List<SearchSuggestionResult> searchSuggestionResults =
                             instance.getAppSearchImpl().searchSuggestion(
@@ -3018,6 +3072,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -3070,8 +3127,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     if (request.isSystemUsage()) {
                         if (!instance.getVisibilityChecker().doesCallerHaveSystemAccess(
                                 callingPackageName)) {
@@ -3134,6 +3195,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -3181,10 +3245,14 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
                     AppSearchBatchResult.Builder<String, Void> resultBuilder =
                             new AppSearchBatchResult.Builder<>();
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     if (Flags.enableRemoveByIdUsesQuery() || isVMEnabledForUser) {
                         if (request.getRemoveByDocumentIdRequest().getIds().isEmpty()) {
                             if (LogUtil.DEBUG) {
@@ -3312,6 +3380,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -3361,8 +3432,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     instance.getAppSearchImpl().removeByQuery(
                             callingPackageName,
                             request.getDatabaseName(),
@@ -3432,6 +3507,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -3478,8 +3556,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     StorageInfo storageInfo = instance.getAppSearchImpl().getStorageInfoForDatabase(
                             callingPackageName,
                             request.getDatabaseName(),
@@ -3522,6 +3604,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -3572,8 +3657,10 @@ public class AppSearchManagerService extends SystemService {
 
                     // Report stats.
                     try {
+                        long getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                         AppSearchUserInstance instance =
                                 mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                        long getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
 
                         int estimatedBinderLatencyMillis =
                                 2 * (int) (totalLatencyStartTimeMillis
@@ -3594,6 +3681,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(1)
                                 .setNumOperationsFailed(0)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     } catch (CancellationException | InterruptedException | ExecutionException e) {
                         Log.w(TAG, "Unable to report CallStats for manually schedule flush", e);
@@ -3610,8 +3700,12 @@ public class AppSearchManagerService extends SystemService {
                     AppSearchUserInstance instance = null;
                     int operationSuccessCount = 0;
                     int operationFailureCount = 0;
+                    long getUserInstanceStartTimeMillis = 0;
+                    long getUserInstanceEndTimeMillis = 0;
                     try {
+                        getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                         instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                        getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                         instance.getAppSearchImpl().persistToDisk(
                                 callingPackageName,
                                 BaseStats.CALL_TYPE_FLUSH,
@@ -3655,6 +3749,9 @@ public class AppSearchManagerService extends SystemService {
                                     .setNumOperationsSucceeded(operationSuccessCount)
                                     .setNumOperationsFailed(operationFailureCount)
                                     .setLaunchVMEnabled(instance.isVMEnabled())
+                                    .setGetUserInstanceLatency(
+                                            (int) (getUserInstanceEndTimeMillis
+                                                    - getUserInstanceStartTimeMillis))
                                     .build());
                         }
                     }
@@ -3689,6 +3786,8 @@ public class AppSearchManagerService extends SystemService {
             int operationSuccessCount = 0;
             int operationFailureCount = 0;
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
+            long getUserInstanceStartTimeMillis = 0;
+            long getUserInstanceEndTimeMillis = 0;
             // Note: registerObserverCallback is performed on the binder thread, unlike most
             // AppSearch APIs
             try {
@@ -3704,7 +3803,9 @@ public class AppSearchManagerService extends SystemService {
                 }
                 long callingIdentity = Binder.clearCallingIdentity();
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
 
                     // Prepare a new ObserverProxy linked to this binder.
                     AppSearchObserverProxy observerProxy =
@@ -3762,6 +3863,9 @@ public class AppSearchManagerService extends SystemService {
                             .setNumOperationsSucceeded(operationSuccessCount)
                             .setNumOperationsFailed(operationFailureCount)
                             .setLaunchVMEnabled(instance.isVMEnabled())
+                            .setGetUserInstanceLatency(
+                                    (int) (getUserInstanceEndTimeMillis
+                                            - getUserInstanceStartTimeMillis))
                             .build());
                 }
             }
@@ -3780,6 +3884,8 @@ public class AppSearchManagerService extends SystemService {
             int operationSuccessCount = 0;
             int operationFailureCount = 0;
             long totalLatencyStartTimeMillis = SystemClock.elapsedRealtime();
+            long getUserInstanceStartTimeMillis = 0;
+            long getUserInstanceEndTimeMillis = 0;
             // Note: unregisterObserverCallback is performed on the binder thread, unlike most
             // AppSearch APIs
             try {
@@ -3795,7 +3901,9 @@ public class AppSearchManagerService extends SystemService {
                 }
                 long callingIdentity = Binder.clearCallingIdentity();
                 try {
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     instance.getAppSearchImpl().unregisterObserverCallback(
                             request.getObservedPackage(),
                             new AppSearchObserverProxy(observerProxyStub));
@@ -3831,6 +3939,9 @@ public class AppSearchManagerService extends SystemService {
                             .setNumOperationsSucceeded(operationSuccessCount)
                             .setNumOperationsFailed(operationFailureCount)
                             .setLaunchVMEnabled(instance.isVMEnabled())
+                            .setGetUserInstanceLatency(
+                                    (int) (getUserInstanceEndTimeMillis
+                                            - getUserInstanceStartTimeMillis))
                             .build());
                 }
             }
@@ -3872,9 +3983,12 @@ public class AppSearchManagerService extends SystemService {
                 AppSearchUserInstance instance = null;
                 int operationSuccessCount = 0;
                 int operationFailureCount = 0;
+                long getUserInstanceStartTimeMillis = 0;
+                long getUserInstanceEndTimeMillis = 0;
                 try {
                     Context targetUserContext = mAppSearchEnvironment
                             .createContextAsUser(mContext, request.getUserHandle());
+                    getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                     instance = mAppSearchUserInstanceManager.getOrCreateUserInstance(
                             targetUserContext,
                             targetUser,
@@ -3883,6 +3997,7 @@ public class AppSearchManagerService extends SystemService {
                             mIsolatedStorageServiceManager,
                             mEnableIsolatedStorageReverseMigration,
                             mIsIsolatedStorageAvailable);
+                    getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                     // It is possible that data got modified during initialization (e.g. rebuild),
                     // so we have to check if we need to schedule persistToDisk.
                     if (Flags.enableDelayedPersistToDisk()) {
@@ -3929,6 +4044,9 @@ public class AppSearchManagerService extends SystemService {
                                 .setNumOperationsSucceeded(operationSuccessCount)
                                 .setNumOperationsFailed(operationFailureCount)
                                 .setLaunchVMEnabled(instance.isVMEnabled())
+                                .setGetUserInstanceLatency(
+                                        (int) (getUserInstanceEndTimeMillis
+                                                - getUserInstanceStartTimeMillis))
                                 .build());
                     }
                 }
@@ -4545,7 +4663,6 @@ public class AppSearchManagerService extends SystemService {
                     mPerUserPersistToDiskFutureLocked.get(targetUser);
             if (persistToDiskFuture == null || persistToDiskFuture.isDone()) {
                 long waitExecutorStartTimeMillis = SystemClock.elapsedRealtime();
-
                 persistToDiskFuture = mExecutorManager.scheduleLambdaForUserNoCallbackAsync(
                         targetUser, () -> {
                             long waitExecutorEndTimeMillis = SystemClock.elapsedRealtime();
@@ -4558,9 +4675,13 @@ public class AppSearchManagerService extends SystemService {
                             AppSearchUserInstance instance = null;
                             int operationSuccessCount = 0;
                             int operationFailureCount = 0;
+                            long getUserInstanceStartTimeMillis = 0;
+                            long getUserInstanceEndTimeMillis = 0;
                             try {
+                                getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
                                 instance =
                                         mAppSearchUserInstanceManager.getUserInstance(targetUser);
+                                getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
                                 instance.getAppSearchImpl().persistToDisk(
                                         callingPackageName,
                                         callType,
@@ -4599,6 +4720,9 @@ public class AppSearchManagerService extends SystemService {
                                             .setNumOperationsSucceeded(operationSuccessCount)
                                             .setNumOperationsFailed(operationFailureCount)
                                             .setLaunchVMEnabled(instance.isVMEnabled())
+                                            .setGetUserInstanceLatency(
+                                                    (int) (getUserInstanceEndTimeMillis
+                                                            - getUserInstanceStartTimeMillis))
                                             .build());
                                 }
                             }
@@ -4637,7 +4761,12 @@ public class AppSearchManagerService extends SystemService {
         int totalLatencyMillis =
                 (int) (SystemClock.elapsedRealtime() - totalLatencyStartTimeMillis);
         try {
-            mAppSearchUserInstanceManager.getUserInstance(targetUser).getLogger().logStats(
+            long getUserInstanceStartTimeMillis = SystemClock.elapsedRealtime();
+            AppSearchUserInstance instance =
+                    mAppSearchUserInstanceManager.getUserInstance(targetUser);
+            long getUserInstanceEndTimeMillis = SystemClock.elapsedRealtime();
+
+            instance.getLogger().logStats(
                     new CallStats.Builder()
                             .setPackageName(callingPackageName)
                             .setDatabase(callingDatabaseName)
@@ -4647,6 +4776,9 @@ public class AppSearchManagerService extends SystemService {
                             .setCallType(apiType)
                             .setEstimatedBinderLatencyMillis(estimatedBinderLatencyMillis)
                             .setNumOperationsFailed(numOperations)
+                            .setGetUserInstanceLatency(
+                                    (int) (getUserInstanceEndTimeMillis
+                                            - getUserInstanceStartTimeMillis))
                             .build());
         } catch (ExecutionException | InterruptedException | CancellationException e) {
             Log.e(TAG, "Failed to get logger for user: " + targetUser

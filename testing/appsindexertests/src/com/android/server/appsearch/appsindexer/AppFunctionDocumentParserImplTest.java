@@ -15,6 +15,9 @@
  */
 package com.android.server.appsearch.appsindexer;
 
+import static android.app.appsearch.testutil.FrameworkFlagUtils.assumeFlagIsEnabled;
+import static com.android.server.appsearch.appsindexer.TestUtils.assertAppFunctionIdInGenericDocument;
+
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.junit.Assume.assumeTrue;
@@ -26,14 +29,12 @@ import android.content.pm.PackageManager;
 import android.content.res.AssetManager;
 import android.content.res.Resources;
 import android.os.Build;
-import android.platform.test.annotations.RequiresFlagsEnabled;
 
 import androidx.annotation.NonNull;
 
 import com.android.server.appsearch.appsindexer.appsearchtypes.AppFunctionDocument;
 
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
@@ -51,7 +52,6 @@ import java.util.Map;
 
 @RunWith(MockitoJUnitRunner.class)
 public class AppFunctionDocumentParserImplTest {
-
     private static final String TEST_PACKAGE_NAME = "com.example.app";
     private static final String TEST_INDEXER_PACKAGE_NAME = "com.android.test.indexer";
     private static final String TEST_XML_ASSET_FILE_PATH = "app_functions.xml";
@@ -137,8 +137,8 @@ public class AppFunctionDocumentParserImplTest {
         assertThat(actualAppFunction.getId()).isEqualTo("com.example.app/com.example.utils#print");
         assertThat(actualAppFunction.getSchemaType())
                 .isEqualTo("AppFunctionStaticMetadata-com.example.app");
-        assertThat(actualAppFunction.getPropertyString("functionId"))
-                .isEqualTo("com.example.utils#print");
+        assertAppFunctionIdInGenericDocument(
+                actualAppFunction, TEST_PACKAGE_NAME, "com.example.utils#print");
         assertThat(actualAppFunction.getPropertyBoolean("enabledByDefault")).isEqualTo(true);
         assertThat(actualAppFunction.getPropertyLong("schemaVersion")).isEqualTo(10);
         assertThat(actualAppFunction.getPropertyString("packageName")).isEqualTo(TEST_PACKAGE_NAME);
@@ -147,11 +147,9 @@ public class AppFunctionDocumentParserImplTest {
     }
 
     @Test
-    @Ignore("b/469699240")
-    @RequiresFlagsEnabled({android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS})
     public void parseIntoMapForGivenSchemas_withNotNullServiceName_servicePropertyIsSet()
             throws Exception {
-        assumeTrue(Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA);
+        assumeFlagIsEnabled(android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS);
         XmlPullParser xmlPullParser = getXmlPullParser(TEST_PRINT_APPFUNCTION_XML);
         final String testXmlService = "com.android.TestAppFunctionsService";
 
@@ -184,7 +182,7 @@ public class AppFunctionDocumentParserImplTest {
                         "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
                                 + "<appfunctions>\n"
                                 + "  <AppFunctionStaticMetadata>\n"
-                                + "    <id>com.example.utils#print</id>\n"
+                                + "    <id>com.example.utils#print1</id>\n"
                                 + "    <functionId>com.example.utils#print1</functionId>\n"
                                 + "    <enabledByDefault>true</enabledByDefault>\n"
                                 + "    <schemaVersion>10</schemaVersion>\n"
@@ -202,8 +200,8 @@ public class AppFunctionDocumentParserImplTest {
                         mPackageManager, TEST_PACKAGE_NAME, xmlPullParser, TEST_SCHEMAS, "");
 
         assertThat(appFunctions).hasSize(2);
-        assertThat(appFunctions).containsKey("com.example.app/com.example.utils#print");
-        assertThat(appFunctions).containsKey("com.example.app/com.example.utils#print");
+        assertThat(appFunctions).containsKey("com.example.app/com.example.utils#print1");
+        assertThat(appFunctions).containsKey("com.example.app/com.example.utils#print2");
     }
 
     @Test
@@ -222,6 +220,28 @@ public class AppFunctionDocumentParserImplTest {
                                 + "    <enabledByDefault>true</enabledByDefault>\n"
                                 + "    <schemaVersion>10</schemaVersion>\n"
                                 + "</appfunctions>");
+
+        Map<String, AppFunctionDocument> appFunctions =
+                mParser.parseIntoMapForGivenSchemas(
+                        mPackageManager, TEST_PACKAGE_NAME, xmlPullParser, TEST_SCHEMAS, "");
+
+        assertThat(appFunctions).isEmpty();
+    }
+
+    @Test
+    public void parseIntoMapForGivenSchemas_malformedXmlUnexpectedEndDocument_returnsEmptyMap()
+            throws Exception {
+        XmlPullParser xmlPullParser =
+                getXmlPullParser(
+                        "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
+                                + "<appfunctions>\n"
+                                + "  <AppFunctionStaticMetadata>\n"
+                                + "    <id>com.example.utils#print</id>\n"
+                                + "    <functionId>com.example.utils#invalid</functionId>\n"
+                                + "    <unknownProperty>\n"
+                                + "     <nestedUnknownProperty>\n"
+                                + "     </nestedUnknownProperty>\n"
+                                + "  <AppFunctionStaticMetadata>\n");
 
         Map<String, AppFunctionDocument> appFunctions =
                 mParser.parseIntoMapForGivenSchemas(
@@ -301,8 +321,8 @@ public class AppFunctionDocumentParserImplTest {
         assertThat(appFunctions).containsKey("com.example.app/com.example.utils#print");
         GenericDocument actualAppFunction =
                 appFunctions.get("com.example.app/com.example.utils#print");
-        assertThat(actualAppFunction.getPropertyString("functionId"))
-                .isEqualTo("com.example.utils#print");
+        assertAppFunctionIdInGenericDocument(
+                actualAppFunction, TEST_PACKAGE_NAME, "com.example.utils#print");
         assertThat(
                         actualAppFunction.getPropertyString(
                                 "appFunctionParameterMetadata.parameterName"))
@@ -343,8 +363,8 @@ public class AppFunctionDocumentParserImplTest {
         assertThat(appFunctions).containsKey("com.example.app/com.example.utils#print");
         GenericDocument actualAppFunction =
                 appFunctions.get("com.example.app/com.example.utils#print");
-        assertThat(actualAppFunction.getPropertyString("functionId"))
-                .isEqualTo("com.example.utils#print");
+        assertAppFunctionIdInGenericDocument(
+                actualAppFunction, TEST_PACKAGE_NAME, "com.example.utils#print");
         assertThat(
                         actualAppFunction.getPropertyString(
                                 "appFunctionParameterMetadata.parameterName"))
@@ -382,8 +402,8 @@ public class AppFunctionDocumentParserImplTest {
         assertThat(appFunctions).containsKey("com.example.app/com.example.utils#print");
         GenericDocument actualAppFunction =
                 appFunctions.get("com.example.app/com.example.utils#print");
-        assertThat(actualAppFunction.getPropertyString("functionId"))
-                .isEqualTo("com.example.utils#print");
+        assertAppFunctionIdInGenericDocument(
+                actualAppFunction, TEST_PACKAGE_NAME, "com.example.utils#print");
         GenericDocument appFunctionParameterMetadataDocument =
                 appFunctions.get("com.example.app/com.example.utils#printParameterMetadata");
         assertThat(appFunctionParameterMetadataDocument.getPropertyString("parameterName"))
@@ -448,8 +468,8 @@ public class AppFunctionDocumentParserImplTest {
         assertThat(appFunctions).containsKey("com.example.app/com.example.utils#print");
         GenericDocument actualAppFunction =
                 appFunctions.get("com.example.app/com.example.utils#print");
-        assertThat(actualAppFunction.getPropertyString("functionId"))
-                .isEqualTo("com.example.utils#print");
+        assertAppFunctionIdInGenericDocument(
+                actualAppFunction, TEST_PACKAGE_NAME, "com.example.utils#print");
         assertThat(
                         Arrays.asList(
                                 actualAppFunction.getPropertyStringArray(
@@ -489,40 +509,15 @@ public class AppFunctionDocumentParserImplTest {
         assertThat(actualAppFunction.getId()).isEqualTo("com.example.app/com.example.utils#print");
         assertThat(actualAppFunction.getSchemaType())
                 .isEqualTo("AppFunctionStaticMetadata-com.example.app");
-        assertThat(actualAppFunction.getPropertyString("functionId"))
-                .isEqualTo("com.example.utils#print");
+        assertAppFunctionIdInGenericDocument(
+                actualAppFunction, TEST_PACKAGE_NAME, "com.example.utils#print");
         assertThat(actualAppFunction.getPropertyBoolean("enabledByDefault")).isEqualTo(true);
         assertThat(actualAppFunction.getPropertyLong("schemaVersion")).isEqualTo(10);
     }
 
     @Test
-    public void parseIntoMapForGivenSchemas_xmlTagWithStartingOrOnlyUnderscores_noFunctionParsed()
+    public void parseIntoMapForGivenSchemas_unknownProperties_functionParsedWithKnownProperties()
             throws Exception {
-        XmlPullParser xmlPullParser =
-                getXmlPullParser(
-                        "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
-                                + "<appfunctions>\n"
-                                + "  <AppFunctionStaticMetadata>\n"
-                                + "    <id>com.example.utils#print</id>\n"
-                                + "    <functionId>com.example.utils#invalid</functionId>\n"
-                                + "    <___>test</___>\n"
-                                + "    <_schema_version_>test</_schema_version_>\n"
-                                + "  </AppFunctionStaticMetadata>\n"
-                                + "  <AppFunctionStaticMetadata>\n"
-                                + "    <id>com.example.utils#print</id>\n"
-                                + "    <functionId>com.example.utils#print</functionId>\n"
-                                + "  </AppFunctionStaticMetadata>\n"
-                                + "</appfunctions>");
-
-        Map<String, AppFunctionDocument> appFunctions =
-                mParser.parseIntoMapForGivenSchemas(
-                        mPackageManager, TEST_PACKAGE_NAME, xmlPullParser, TEST_SCHEMAS, "");
-
-        assertThat(appFunctions).isEmpty();
-    }
-
-    @Test
-    public void parseIntoMapForGivenSchemas_unknownProperties_noFunctionParsed() throws Exception {
         XmlPullParser xmlPullParser =
                 getXmlPullParser(
                         "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
@@ -538,6 +533,10 @@ public class AppFunctionDocumentParserImplTest {
                                 + "  <AppFunctionStaticMetadata>\n"
                                 + "    <id>com.example.utils#print</id>\n"
                                 + "    <functionId>com.example.utils#print</functionId>\n"
+                                + "    <___>\n"
+                                + "        <id>nestedId</id>\n"
+                                + "        <functionId>nestedFunctionId</functionId>\n"
+                                + "    </___>\n"
                                 + "  </AppFunctionStaticMetadata>\n"
                                 + "</appfunctions>");
 
@@ -545,13 +544,23 @@ public class AppFunctionDocumentParserImplTest {
                 mParser.parseIntoMapForGivenSchemas(
                         mPackageManager, TEST_PACKAGE_NAME, xmlPullParser, TEST_SCHEMAS, "");
 
-        assertThat(appFunctions).isEmpty();
+        assertThat(appFunctions).hasSize(2);
+        assertThat(appFunctions).containsKey("com.example.app/com.example.utils#print");
+        // Only known properties are present in the document.
+        assertThat(appFunctions.get("com.example.app/com.example.utils#print").getPropertyNames())
+                .containsExactly(
+                        "enabledByDefault",
+                        "functionId",
+                        "packageNameHash",
+                        "scope",
+                        "mobileApplicationQualifiedId",
+                        "packageName");
     }
 
     @Test
-    @RequiresFlagsEnabled(android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS)
     public void parseIntoMapForGivenSchemas_serviceNameInXml_doesNotParseFunction()
             throws Exception {
+        assumeFlagIsEnabled(android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS);
         Map<String, AppSearchSchema> testSchemas =
                 Map.of(
                         "AppFunctionStaticMetadata-com.example.app",
@@ -584,6 +593,47 @@ public class AppFunctionDocumentParserImplTest {
                         xmlPullParser,
                         testSchemas,
                         "correct.service.Name");
+
+        assertThat(appFunctions).isEmpty();
+    }
+
+    @Test
+    public void parseIntoMapForGivenSchemas_packageNameHashInXml_doesNotParseFunction()
+            throws Exception {
+        assumeFlagIsEnabled(android.app.appfunctions.flags.Flags.FLAG_ENABLE_DYNAMIC_APP_FUNCTIONS);
+        Map<String, AppSearchSchema> testSchemas =
+                Map.of(
+                        "AppFunctionStaticMetadata-com.example.app",
+                        new AppSearchSchema.Builder("AppFunctionStaticMetadata-com.example.app")
+                                .addProperty(
+                                        new AppSearchSchema.StringPropertyConfig.Builder(
+                                                        "functionId")
+                                                .build())
+                                .addProperty(
+                                        new AppSearchSchema.LongPropertyConfig.Builder(
+                                                        "packageNameHash")
+                                                .build())
+                                .build());
+
+        XmlPullParser xmlPullParser =
+                getXmlPullParser(
+                        "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n"
+                                + "<appfunctions>\n"
+                                + "  <AppFunctionStaticMetadata>\n"
+                                + "    <id>com.example.utils#print</id>\n"
+                                + "    <functionId>com.example.utils#print</functionId>\n"
+                                // packageNameHash cannot be set by the app.
+                                + "    <packageNameHash>123</packageNameHash>\n"
+                                + "  </AppFunctionStaticMetadata>\n"
+                                + "</appfunctions>");
+
+        Map<String, AppFunctionDocument> appFunctions =
+                mParser.parseIntoMapForGivenSchemas(
+                        mPackageManager,
+                        TEST_PACKAGE_NAME,
+                        xmlPullParser,
+                        testSchemas,
+                        "service.Name");
 
         assertThat(appFunctions).isEmpty();
     }

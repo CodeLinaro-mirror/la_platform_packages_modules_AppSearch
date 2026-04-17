@@ -43,6 +43,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
@@ -58,6 +59,7 @@ import android.annotation.Nullable;
 import android.app.AlarmManager;
 import android.app.UiAutomation;
 import android.app.admin.DevicePolicyManager;
+import android.app.appsearch.AppSearchAccount;
 import android.app.appsearch.AppSearchBatchResult;
 import android.app.appsearch.AppSearchEnvironmentFactory;
 import android.app.appsearch.AppSearchResult;
@@ -122,6 +124,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
@@ -133,12 +136,15 @@ import androidx.test.core.app.ApplicationProvider;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import com.android.appsearch.flags.Flags;
+import com.android.dx.mockito.inline.extended.ExtendedMockito;
 import com.android.modules.utils.testing.ExtendedMockitoRule;
 import com.android.modules.utils.testing.TestableDeviceConfig;
 import com.android.server.appsearch.ServiceTestUtil.MockServiceManager;
 import com.android.server.appsearch.contactsindexer.AppSearchHelper;
 import com.android.server.appsearch.contactsindexer.appsearchtypes.ContactPoint;
+import com.android.server.appsearch.contactsindexer.appsearchtypes.ContactRelation;
 import com.android.server.appsearch.contactsindexer.appsearchtypes.Person;
+import com.android.server.appsearch.contactsindexer.appsearchtypes.SignificantDate;
 import com.android.server.appsearch.external.localstorage.stats.CallStats;
 import com.android.server.appsearch.external.localstorage.stats.QueryStats;
 import com.android.server.appsearch.external.localstorage.stats.SearchIntentStats;
@@ -163,6 +169,7 @@ import org.mockito.ArgumentCaptor;
 
 import java.io.File;
 import java.io.FileDescriptor;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -188,6 +195,7 @@ public class AppSearchManagerServiceTest {
     @Rule
     public ExtendedMockitoRule mExtendedMockitoRule = new ExtendedMockitoRule.Builder()
             .addStaticMockFixtures(() -> mMockServiceManager, TestableDeviceConfig::new)
+            .spyStatic(Process.class)
             .build();
 
     @Rule
@@ -1560,7 +1568,16 @@ public class AppSearchManagerServiceTest {
     @Test
     public void testEnterpriseGetDocumentsInSystemPackage_transformsPerson() throws Exception {
         // Set Person schema
-        List<AppSearchSchema> schemas = Arrays.asList(Person.getSchema(), ContactPoint.SCHEMA);
+        List<AppSearchSchema> schemas = new ArrayList<>();
+        schemas.add(ContactPoint.getSchema());
+        schemas.add(Person.getSchema());
+        if (Flags.enableContactsIndexerExtendedProperties()) {
+            schemas.add(SignificantDate.SCHEMA);
+            schemas.add(ContactRelation.SCHEMA);
+            if (Flags.enableSchemasWipeoutAccountPropertyPaths()) {
+                schemas.add(AppSearchAccount.SCHEMA);
+            }
+        }
         InternalSetSchemaResponse internalSetSchemaResponse =
                 mUserInstance
                         .getAppSearchImpl()
@@ -1913,6 +1930,68 @@ public class AppSearchManagerServiceTest {
         // Verify read executor was used
         verify(writeExecutorSpy, never()).execute(any());
         verify(readExecutorSpy, times(1)).execute(any());
+    }
+
+@Test
+    @RequiresFlagsEnabled(android.app.privatecompute.flags.Flags.FLAG_ENABLE_PCC_FRAMEWORK_SUPPORT)
+    public void testVerifyCallingPackage_pccUidMatch_success() throws Exception {
+        String definingPackageName = "com.pcc.defining.app";
+        int actualUid = AppSearchAttributionSource.createAttributionSource(mContext, mCallingPid)
+                .getUid();
+        int definingUid = actualUid + 10;
+
+        PackageManager spyPackageManager = spy(mContext.getPackageManager());
+        doReturn(definingUid).when(spyPackageManager)
+                .getPackageUid(eq(definingPackageName), anyInt());
+        doReturn(definingUid).when(spyPackageManager).getAppUidForPrivateComputeCoreUid(actualUid);
+        mContext.mPackageManager = spyPackageManager;
+        mContext.mPackageName = definingPackageName;
+
+        // Force the OS to treat our actual test UID as a PCC UID
+        ExtendedMockito.doReturn(true).when(() -> Process.isPrivateComputeCoreUid(actualUid));
+
+        AppSearchAttributionSource attrSrc = AppSearchAttributionSource.createAttributionSource(
+                                                mContext, mCallingPid);
+        TestResultCallback callback = new TestResultCallback();
+
+        mAppSearchManagerServiceStub.initialize(
+                new InitializeAidlRequest(attrSrc, mUserHandle, BINDER_CALL_START_TIME),
+                callback);
+
+        // Success: actualUid is flagged as a PCC UID, maps to definingUid, which matches the
+        // package UID
+        assertThat(callback.get().getResultCode()).isEqualTo(AppSearchResult.RESULT_OK);
+    }
+
+    @Test
+    @RequiresFlagsEnabled(android.app.privatecompute.flags.Flags.FLAG_ENABLE_PCC_FRAMEWORK_SUPPORT)
+    public void testVerifyCallingPackage_pccUidMismatch_throwsSecurityException() throws Exception {
+        String claimedPackageName = "com.some.other.app";
+        int actualUid = AppSearchAttributionSource.createAttributionSource(mContext, mCallingPid)
+                .getUid();
+        int definingUid = actualUid + 10;
+        int claimedUid = actualUid + 20;
+
+        PackageManager spyPackageManager = spy(mContext.getPackageManager());
+        doReturn(claimedUid).when(spyPackageManager).getPackageUid(
+                eq(claimedPackageName), anyInt());
+        doReturn(definingUid).when(spyPackageManager).getAppUidForPrivateComputeCoreUid(actualUid);
+        mContext.mPackageManager = spyPackageManager;
+        mContext.mPackageName = claimedPackageName;
+
+        ExtendedMockito.doReturn(true).when(() -> Process.isPrivateComputeCoreUid(actualUid));
+
+        AppSearchAttributionSource attrSrc = AppSearchAttributionSource.createAttributionSource(
+                        mContext, mCallingPid);
+        TestResultCallback callback = new TestResultCallback();
+
+        mAppSearchManagerServiceStub.initialize(
+                new InitializeAidlRequest(attrSrc, mUserHandle, BINDER_CALL_START_TIME),
+                callback);
+
+        assertThat(callback.get().isSuccess()).isFalse();
+        assertThat(callback.get().getErrorMessage()).contains("SecurityException");
+        assertThat(callback.get().getErrorMessage()).contains("Specified calling package");
     }
 
     private void verifyLocalCallsResults(int resultCode) throws Exception {
